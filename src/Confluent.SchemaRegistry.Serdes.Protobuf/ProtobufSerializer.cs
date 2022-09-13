@@ -261,52 +261,64 @@ namespace Confluent.SchemaRegistry.Serdes
 
                 string fullname = value.Descriptor.FullName;
 
-                await serializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
-                try
+                string subject = this.subjectNameStrategy != null
+                    // use the subject name strategy specified in the serializer config if available.
+                    ? this.subjectNameStrategy(context, fullname)
+                    // else fall back to the deprecated config from (or default as currently supplied by) SchemaRegistry.
+                    : context.Component == MessageComponentType.Key
+                        ? schemaRegistryClient.ConstructKeySubjectName(context.Topic, fullname)
+                        : schemaRegistryClient.ConstructValueSubjectName(context.Topic, fullname);
+
+                bool alreadyRegistered;
+                lock (subjectsRegistered)
                 {
-                    string subject = this.subjectNameStrategy != null
-                        // use the subject name strategy specified in the serializer config if available.
-                        ? this.subjectNameStrategy(context, fullname)
-                        // else fall back to the deprecated config from (or default as currently supplied by) SchemaRegistry.
-                        : context.Component == MessageComponentType.Key
-                            ? schemaRegistryClient.ConstructKeySubjectName(context.Topic, fullname)
-                            : schemaRegistryClient.ConstructValueSubjectName(context.Topic, fullname);
-
-                    if (!subjectsRegistered.Contains(subject))
-                    {
-                        if (useLatestVersion)
-                        {
-                            var latestSchema = await schemaRegistryClient.GetLatestSchemaAsync(subject)
-                                .ConfigureAwait(continueOnCapturedContext: false);
-                            schemaId = latestSchema.Id;
-                        }
-                        else
-                        {
-                            var references =
-                                await RegisterOrGetReferences(value.Descriptor.File, context, autoRegisterSchema, skipKnownTypes)
-                                    .ConfigureAwait(continueOnCapturedContext: false);
-
-                            // first usage: register/get schema to check compatibility
-                            schemaId = autoRegisterSchema
-                                ? await schemaRegistryClient.RegisterSchemaAsync(subject,
-                                        new Schema(value.Descriptor.File.SerializedData.ToBase64(), references,
-                                            SchemaType.Protobuf), normalizeSchemas)
-                                    .ConfigureAwait(continueOnCapturedContext: false)
-                                : await schemaRegistryClient.GetSchemaIdAsync(subject,
-                                        new Schema(value.Descriptor.File.SerializedData.ToBase64(), references,
-                                            SchemaType.Protobuf), normalizeSchemas)
-                                    .ConfigureAwait(continueOnCapturedContext: false);
-
-                            // note: different values for schemaId should never be seen here.
-                            // TODO: but fail fast may be better here.
-                        }
-
-                        subjectsRegistered.Add(subject);
-                    }
+                    alreadyRegistered = subjectsRegistered.Contains(subject);
                 }
-                finally
+
+                if (!alreadyRegistered)
                 {
-                    serializeMutex.Release();
+                    await serializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
+                    try
+                    {
+                        if (!subjectsRegistered.Contains(subject))
+                        {
+                            if (useLatestVersion)
+                            {
+                                var latestSchema = await schemaRegistryClient.GetLatestSchemaAsync(subject)
+                                    .ConfigureAwait(continueOnCapturedContext: false);
+                                schemaId = latestSchema.Id;
+                            }
+                            else
+                            {
+                                var references =
+                                    await RegisterOrGetReferences(value.Descriptor.File, context, autoRegisterSchema, skipKnownTypes)
+                                        .ConfigureAwait(continueOnCapturedContext: false);
+
+                                // first usage: register/get schema to check compatibility
+                                schemaId = autoRegisterSchema
+                                    ? await schemaRegistryClient.RegisterSchemaAsync(subject,
+                                            new Schema(value.Descriptor.File.SerializedData.ToBase64(), references,
+                                                SchemaType.Protobuf), normalizeSchemas)
+                                        .ConfigureAwait(continueOnCapturedContext: false)
+                                    : await schemaRegistryClient.GetSchemaIdAsync(subject,
+                                            new Schema(value.Descriptor.File.SerializedData.ToBase64(), references,
+                                                SchemaType.Protobuf), normalizeSchemas)
+                                        .ConfigureAwait(continueOnCapturedContext: false);
+
+                                // note: different values for schemaId should never be seen here.
+                                // TODO: but fail fast may be better here.
+                            }
+
+                            lock (subjectsRegistered)
+                            {
+                                subjectsRegistered.Add(subject);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        serializeMutex.Release();
+                    }
                 }
 
                 using (var stream = new MemoryStream(initialBufferSize))
