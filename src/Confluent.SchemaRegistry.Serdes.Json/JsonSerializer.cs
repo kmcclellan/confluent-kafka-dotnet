@@ -158,45 +158,57 @@ namespace Confluent.SchemaRegistry.Serdes
 
             try
             {
-                await serializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
-                try
+                string subject = this.subjectNameStrategy != null
+                    // use the subject name strategy specified in the serializer config if available.
+                    ? this.subjectNameStrategy(context, this.schemaFullname)
+                    // else fall back to the deprecated config from (or default as currently supplied by) SchemaRegistry.
+                    : context.Component == MessageComponentType.Key
+                        ? schemaRegistryClient.ConstructKeySubjectName(context.Topic, this.schemaFullname)
+                        : schemaRegistryClient.ConstructValueSubjectName(context.Topic, this.schemaFullname);
+
+                bool alreadyRegistered;
+                lock (subjectsRegistered)
                 {
-                    string subject = this.subjectNameStrategy != null
-                        // use the subject name strategy specified in the serializer config if available.
-                        ? this.subjectNameStrategy(context, this.schemaFullname)
-                        // else fall back to the deprecated config from (or default as currently supplied by) SchemaRegistry.
-                        : context.Component == MessageComponentType.Key
-                            ? schemaRegistryClient.ConstructKeySubjectName(context.Topic, this.schemaFullname)
-                            : schemaRegistryClient.ConstructValueSubjectName(context.Topic, this.schemaFullname);
-
-                    if (!subjectsRegistered.Contains(subject))
-                    {
-                        if (useLatestVersion)
-                        {
-                            var latestSchema = await schemaRegistryClient.GetLatestSchemaAsync(subject)
-                                .ConfigureAwait(continueOnCapturedContext: false);
-                            schemaId = latestSchema.Id;
-                        }
-                        else
-                        {
-                            // first usage: register/get schema to check compatibility
-                            schemaId = autoRegisterSchema
-                                ? await schemaRegistryClient.RegisterSchemaAsync(subject,
-                                        new Schema(this.schemaText, EmptyReferencesList, SchemaType.Json), normalizeSchemas)
-                                    .ConfigureAwait(continueOnCapturedContext: false)
-                                : await schemaRegistryClient.GetSchemaIdAsync(subject,
-                                        new Schema(this.schemaText, EmptyReferencesList, SchemaType.Json), normalizeSchemas)
-                                    .ConfigureAwait(continueOnCapturedContext: false);
-
-                            // TODO: It may be better to fail fast if conflicting values for schemaId are seen here.
-                        }
-
-                        subjectsRegistered.Add(subject);
-                    }
+                    alreadyRegistered = subjectsRegistered.Contains(subject);
                 }
-                finally
+
+                if (!alreadyRegistered)
                 {
-                    serializeMutex.Release();
+                    await serializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
+                    try
+                    {
+                        if (!subjectsRegistered.Contains(subject))
+                        {
+                            if (useLatestVersion)
+                            {
+                                var latestSchema = await schemaRegistryClient.GetLatestSchemaAsync(subject)
+                                    .ConfigureAwait(continueOnCapturedContext: false);
+                                schemaId = latestSchema.Id;
+                            }
+                            else
+                            {
+                                // first usage: register/get schema to check compatibility
+                                schemaId = autoRegisterSchema
+                                    ? await schemaRegistryClient.RegisterSchemaAsync(subject,
+                                            new Schema(this.schemaText, EmptyReferencesList, SchemaType.Json), normalizeSchemas)
+                                        .ConfigureAwait(continueOnCapturedContext: false)
+                                    : await schemaRegistryClient.GetSchemaIdAsync(subject,
+                                            new Schema(this.schemaText, EmptyReferencesList, SchemaType.Json), normalizeSchemas)
+                                        .ConfigureAwait(continueOnCapturedContext: false);
+
+                                // TODO: It may be better to fail fast if conflicting values for schemaId are seen here.
+                            }
+
+                            lock (subjectsRegistered)
+                            {
+                                subjectsRegistered.Add(subject);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        serializeMutex.Release();
+                    }
                 }
                 
                 using (var stream = new MemoryStream(initialBufferSize))
