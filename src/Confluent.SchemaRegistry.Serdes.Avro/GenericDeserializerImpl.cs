@@ -67,35 +67,52 @@ namespace Confluent.SchemaRegistry.Serdes
                     var writerId = IPAddress.NetworkToHostOrder(reader.ReadInt32());
 
                     DatumReader<GenericRecord> datumReader;
-                    await deserializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
-                    try
+
+                    lock (datumReaderBySchemaId)
                     {
                         datumReaderBySchemaId.TryGetValue(writerId, out datumReader);
-                        if (datumReader == null)
-                        {
-                            // TODO: If any of this cache fills up, this is probably an
-                            // indication of misuse of the deserializer. Ideally we would do 
-                            // something more sophisticated than the below + not allow 
-                            // the misuse to keep happening without warning.
-                            if (datumReaderBySchemaId.Count > schemaRegistryClient.MaxCachedSchemas)
-                            {
-                                datumReaderBySchemaId.Clear();
-                            }
-
-                            var writerSchemaResult = await schemaRegistryClient.GetSchemaAsync(writerId).ConfigureAwait(continueOnCapturedContext: false);
-                            if (writerSchemaResult.SchemaType != SchemaType.Avro)
-                            {
-                                throw new InvalidOperationException("Expecting writer schema to have type Avro, not {writerSchemaResult.SchemaType}");
-                            }
-                            var writerSchema = global::Avro.Schema.Parse(writerSchemaResult.SchemaString);
-
-                            datumReader = new GenericReader<GenericRecord>(writerSchema, writerSchema);
-                            datumReaderBySchemaId[writerId] = datumReader;
-                        }
                     }
-                    finally
+
+                    if (datumReader == null)
                     {
-                        deserializeMutex.Release();
+                        // Other threads may still access readers (use synchronous locking when modifying).
+                        await deserializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
+                        try
+                        {
+                            datumReaderBySchemaId.TryGetValue(writerId, out datumReader);
+                            if (datumReader == null)
+                            {
+                                // TODO: If any of this cache fills up, this is probably an
+                                // indication of misuse of the deserializer. Ideally we would do 
+                                // something more sophisticated than the below + not allow 
+                                // the misuse to keep happening without warning.
+                                if (datumReaderBySchemaId.Count > schemaRegistryClient.MaxCachedSchemas)
+                                {
+                                    lock (datumReaderBySchemaId)
+                                    {
+                                        datumReaderBySchemaId.Clear();
+                                    }
+                                }
+
+                                var writerSchemaResult = await schemaRegistryClient.GetSchemaAsync(writerId).ConfigureAwait(continueOnCapturedContext: false);
+                                if (writerSchemaResult.SchemaType != SchemaType.Avro)
+                                {
+                                    throw new InvalidOperationException("Expecting writer schema to have type Avro, not {writerSchemaResult.SchemaType}");
+                                }
+                                var writerSchema = global::Avro.Schema.Parse(writerSchemaResult.SchemaString);
+
+                                datumReader = new GenericReader<GenericRecord>(writerSchema, writerSchema);
+
+                                lock (datumReaderBySchemaId)
+                                {
+                                    datumReaderBySchemaId[writerId] = datumReader;
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            deserializeMutex.Release();
+                        }
                     }
                     
                     return datumReader.Read(default(GenericRecord), new BinaryDecoder(stream));

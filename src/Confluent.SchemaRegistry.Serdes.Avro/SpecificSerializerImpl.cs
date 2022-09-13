@@ -181,63 +181,80 @@ namespace Confluent.SchemaRegistry.Serdes
             try
             {
                 SerializerSchemaData currentSchemaData;
-                await serializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
-                try
+
+                if (singleSchemaData == null)
                 {
-                    if (singleSchemaData == null)
+                    var key = data.GetType();
+                    lock (multiSchemaData)
                     {
-                        var key = data.GetType();
                         if (!multiSchemaData.TryGetValue(key, out currentSchemaData))
                         {
                             currentSchemaData = ExtractSchemaData(key);
                             multiSchemaData[key] = currentSchemaData;
                         }
                     }
-                    else
-                    {
-                        currentSchemaData = singleSchemaData;
-                    }
-
-                    string fullname = null;
-                    if (data is ISpecificRecord && ((ISpecificRecord)data).Schema is Avro.RecordSchema)
-                    {
-                        fullname = ((Avro.RecordSchema)((ISpecificRecord)data).Schema).Fullname;
-                    }
-
-                    string subject = this.subjectNameStrategy != null
-                        // use the subject name strategy specified in the serializer config if available.
-                        ? this.subjectNameStrategy(new SerializationContext(isKey ? MessageComponentType.Key : MessageComponentType.Value, topic), fullname)
-                        // else fall back to the deprecated config from (or default as currently supplied by) SchemaRegistry.
-                        : isKey
-                            ? schemaRegistryClient.ConstructKeySubjectName(topic, fullname)
-                            : schemaRegistryClient.ConstructValueSubjectName(topic, fullname);
-
-                    if (!currentSchemaData.SubjectsRegistered.Contains(subject))
-                    {
-                        if (useLatestVersion)
-                        {
-                            var latestSchema = await schemaRegistryClient.GetLatestSchemaAsync(subject)
-                                .ConfigureAwait(continueOnCapturedContext: false);
-                            currentSchemaData.WriterSchemaId = latestSchema.Id;
-                        }
-                        else
-                        {
-                            // first usage: register/get schema to check compatibility
-                            currentSchemaData.WriterSchemaId = autoRegisterSchema
-                                ? await schemaRegistryClient
-                                    .RegisterSchemaAsync(subject, currentSchemaData.WriterSchemaString, normalizeSchemas)
-                                    .ConfigureAwait(continueOnCapturedContext: false)
-                                : await schemaRegistryClient
-                                    .GetSchemaIdAsync(subject, currentSchemaData.WriterSchemaString, normalizeSchemas)
-                                    .ConfigureAwait(continueOnCapturedContext: false);
-                        }
-
-                        currentSchemaData.SubjectsRegistered.Add(subject);
-                    }
                 }
-                finally
+                else
                 {
-                    serializeMutex.Release();
+                    currentSchemaData = singleSchemaData;
+                }
+
+                string fullname = null;
+                if (data is ISpecificRecord && ((ISpecificRecord)data).Schema is Avro.RecordSchema)
+                {
+                    fullname = ((Avro.RecordSchema)((ISpecificRecord)data).Schema).Fullname;
+                }
+
+                string subject = this.subjectNameStrategy != null
+                    // use the subject name strategy specified in the serializer config if available.
+                    ? this.subjectNameStrategy(new SerializationContext(isKey ? MessageComponentType.Key : MessageComponentType.Value, topic), fullname)
+                    // else fall back to the deprecated config from (or default as currently supplied by) SchemaRegistry.
+                    : isKey
+                        ? schemaRegistryClient.ConstructKeySubjectName(topic, fullname)
+                        : schemaRegistryClient.ConstructValueSubjectName(topic, fullname);
+
+                bool alreadyRegistered;
+                lock (currentSchemaData.SubjectsRegistered)
+                {
+                    alreadyRegistered = currentSchemaData.SubjectsRegistered.Contains(subject);
+                }
+
+                if (!alreadyRegistered)
+                {
+                    // Other threads may still access subjects (use synchronous locking when modifying).
+                    await serializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
+                    try
+                    {
+                        if (!currentSchemaData.SubjectsRegistered.Contains(subject))
+                        {
+                            if (useLatestVersion)
+                            {
+                                var latestSchema = await schemaRegistryClient.GetLatestSchemaAsync(subject)
+                                    .ConfigureAwait(continueOnCapturedContext: false);
+                                currentSchemaData.WriterSchemaId = latestSchema.Id;
+                            }
+                            else
+                            {
+                                // first usage: register/get schema to check compatibility
+                                currentSchemaData.WriterSchemaId = autoRegisterSchema
+                                    ? await schemaRegistryClient
+                                        .RegisterSchemaAsync(subject, currentSchemaData.WriterSchemaString, normalizeSchemas)
+                                        .ConfigureAwait(continueOnCapturedContext: false)
+                                    : await schemaRegistryClient
+                                        .GetSchemaIdAsync(subject, currentSchemaData.WriterSchemaString, normalizeSchemas)
+                                        .ConfigureAwait(continueOnCapturedContext: false);
+                            }
+
+                            lock (currentSchemaData.SubjectsRegistered)
+                            {
+                                currentSchemaData.SubjectsRegistered.Add(subject);
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        serializeMutex.Release();
+                    }
                 }
 
                 using (var stream = new MemoryStream(initialBufferSize))

@@ -120,27 +120,44 @@ namespace Confluent.SchemaRegistry.Serdes
                     var writerId = IPAddress.NetworkToHostOrder(reader.ReadInt32());
 
                     DatumReader<T> datumReader;
-                    await deserializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
-                    try
+
+                    lock (datumReaderBySchemaId)
                     {
                         datumReaderBySchemaId.TryGetValue(writerId, out datumReader);
-                        if (datumReader == null)
-                        {
-                            if (datumReaderBySchemaId.Count > schemaRegistryClient.MaxCachedSchemas)
-                            {
-                                datumReaderBySchemaId.Clear();
-                            }
-
-                            var writerSchemaJson = await schemaRegistryClient.GetSchemaAsync(writerId).ConfigureAwait(continueOnCapturedContext: false);
-                            var writerSchema = global::Avro.Schema.Parse(writerSchemaJson.SchemaString);
-
-                            datumReader = new SpecificReader<T>(writerSchema, ReaderSchema);
-                            datumReaderBySchemaId[writerId] = datumReader;
-                        }
                     }
-                    finally
+
+                    if (datumReader == null)
                     {
-                        deserializeMutex.Release();
+                        // Other threads may still access readers (use synchronous locking when modifying).
+                        await deserializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
+                        try
+                        {
+                            datumReaderBySchemaId.TryGetValue(writerId, out datumReader);
+                            if (datumReader == null)
+                            {
+                                if (datumReaderBySchemaId.Count > schemaRegistryClient.MaxCachedSchemas)
+                                {
+                                    lock (datumReaderBySchemaId)
+                                    {
+                                        datumReaderBySchemaId.Clear();
+                                    }
+                                }
+
+                                var writerSchemaJson = await schemaRegistryClient.GetSchemaAsync(writerId).ConfigureAwait(continueOnCapturedContext: false);
+                                var writerSchema = global::Avro.Schema.Parse(writerSchemaJson.SchemaString);
+
+                                datumReader = new SpecificReader<T>(writerSchema, ReaderSchema);
+
+                                lock (datumReaderBySchemaId)
+                                {
+                                    datumReaderBySchemaId[writerId] = datumReader;
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            deserializeMutex.Release();
+                        }
                     }
 
                     if (typeof(ISpecificRecord).IsAssignableFrom(typeof(T)))

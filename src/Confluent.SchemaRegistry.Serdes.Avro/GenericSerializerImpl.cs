@@ -85,8 +85,10 @@ namespace Confluent.SchemaRegistry.Serdes
             {
                 int schemaId;
                 global::Avro.RecordSchema writerSchema;
-                await serializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
-                try
+
+                lock (knownSchemas)
+                lock (registeredSchemas)
+                lock (schemaIds)
                 {
                     // TODO: If any of these caches fills up, this is probably an
                     // indication of misuse of the serializer. Ideally we would do 
@@ -100,13 +102,17 @@ namespace Confluent.SchemaRegistry.Serdes
                         registeredSchemas.Clear();
                         schemaIds.Clear();
                     }
+                }
 
-                    // Determine a schema string corresponding to the schema object.
-                    // TODO: It would be more efficient to use a hash function based
-                    // on the instance reference, not the implementation provided by 
-                    // Schema.
-                    writerSchema = data.Schema;
-                    string writerSchemaString = null;
+                // Determine a schema string corresponding to the schema object.
+                // TODO: It would be more efficient to use a hash function based
+                // on the instance reference, not the implementation provided by 
+                // Schema.
+                writerSchema = data.Schema;
+                string writerSchemaString = null;
+
+                lock (knownSchemas)
+                {
                     if (knownSchemas.ContainsKey(writerSchema))
                     {
                         writerSchemaString = knownSchemas[writerSchema];
@@ -116,67 +122,95 @@ namespace Confluent.SchemaRegistry.Serdes
                         writerSchemaString = writerSchema.ToString();
                         knownSchemas.Add(writerSchema, writerSchemaString);
                     }
+                }
 
-                    // Verify schema compatibility (& register as required) + get the 
-                    // id corresponding to the schema.
-                    
-                    // TODO: Again, the hash functions in use below are potentially 
-                    // slow since writerSchemaString is potentially long. It would be
-                    // better to use hash functions based on the writerSchemaString 
-                    // object reference, not value.
+                // Verify schema compatibility (& register as required) + get the 
+                // id corresponding to the schema.
 
-                    string subject = this.subjectNameStrategy != null
-                        // use the subject name strategy specified in the serializer config if available.
-                        ? this.subjectNameStrategy(new SerializationContext(isKey ? MessageComponentType.Key : MessageComponentType.Value, topic), data.Schema.Fullname)
-                        // else fall back to the deprecated config from (or default as currently supplied by) SchemaRegistry.
-                        : isKey
-                            ? schemaRegistryClient.ConstructKeySubjectName(topic, data.Schema.Fullname)
-                            : schemaRegistryClient.ConstructValueSubjectName(topic, data.Schema.Fullname);
+                // TODO: Again, the hash functions in use below are potentially 
+                // slow since writerSchemaString is potentially long. It would be
+                // better to use hash functions based on the writerSchemaString 
+                // object reference, not value.
 
-                    var subjectSchemaPair = new KeyValuePair<string, string>(subject, writerSchemaString);
-                    if (!registeredSchemas.Contains(subjectSchemaPair))
+                string subject = this.subjectNameStrategy != null
+                    // use the subject name strategy specified in the serializer config if available.
+                    ? this.subjectNameStrategy(new SerializationContext(isKey ? MessageComponentType.Key : MessageComponentType.Value, topic), data.Schema.Fullname)
+                    // else fall back to the deprecated config from (or default as currently supplied by) SchemaRegistry.
+                    : isKey
+                        ? schemaRegistryClient.ConstructKeySubjectName(topic, data.Schema.Fullname)
+                        : schemaRegistryClient.ConstructValueSubjectName(topic, data.Schema.Fullname);
+
+                var subjectSchemaPair = new KeyValuePair<string, string>(subject, writerSchemaString);
+
+                bool alreadyRegistered;
+                lock (registeredSchemas)
+                {
+                    alreadyRegistered = registeredSchemas.Contains(subjectSchemaPair);
+                }
+
+                if (!alreadyRegistered)
+                {
+                    // Other threads may still modify collections (use synchronous locking when accessing/modifying).
+                    await serializeMutex.WaitAsync().ConfigureAwait(continueOnCapturedContext: false);
+                    try
                     {
-                        int newSchemaId;
-                        if (useLatestVersion)
+                        lock (registeredSchemas)
                         {
-                            var latestSchema = await schemaRegistryClient.GetLatestSchemaAsync(subject)
-                                .ConfigureAwait(continueOnCapturedContext: false);
-                            newSchemaId = latestSchema.Id;
+                            alreadyRegistered = registeredSchemas.Contains(subjectSchemaPair);
                         }
-                        else
+
+                        if (!alreadyRegistered)
                         {
-                            // first usage: register/get schema to check compatibility
-                            if (autoRegisterSchema)
+                            int newSchemaId;
+                            if (useLatestVersion)
                             {
-                                newSchemaId = await schemaRegistryClient
-                                    .RegisterSchemaAsync(subject, writerSchemaString, normalizeSchemas)
+                                var latestSchema = await schemaRegistryClient.GetLatestSchemaAsync(subject)
                                     .ConfigureAwait(continueOnCapturedContext: false);
+                                newSchemaId = latestSchema.Id;
                             }
                             else
                             {
-                                newSchemaId = await schemaRegistryClient.GetSchemaIdAsync(subject, writerSchemaString, normalizeSchemas)
-                                    .ConfigureAwait(continueOnCapturedContext: false);
+                                // first usage: register/get schema to check compatibility
+                                if (autoRegisterSchema)
+                                {
+                                    newSchemaId = await schemaRegistryClient
+                                        .RegisterSchemaAsync(subject, writerSchemaString, normalizeSchemas)
+                                        .ConfigureAwait(continueOnCapturedContext: false);
+                                }
+                                else
+                                {
+                                    newSchemaId = await schemaRegistryClient.GetSchemaIdAsync(subject, writerSchemaString, normalizeSchemas)
+                                        .ConfigureAwait(continueOnCapturedContext: false);
+                                }
+                            }
+
+                            lock (registeredSchemas)
+                            lock (schemaIds)
+                            {
+                                if (!schemaIds.ContainsKey(writerSchemaString))
+                                {
+                                    schemaIds.Add(writerSchemaString, newSchemaId);
+                                }
+                                else if (schemaIds[writerSchemaString] != newSchemaId)
+                                {
+                                    schemaIds.Clear();
+                                    registeredSchemas.Clear();
+                                    throw new KafkaException(new Error(isKey ? ErrorCode.Local_KeySerialization : ErrorCode.Local_ValueSerialization, $"Duplicate schema registration encountered: Schema ids {schemaIds[writerSchemaString]} and {newSchemaId} are associated with the same schema."));
+                                }
+
+                                registeredSchemas.Add(subjectSchemaPair);
                             }
                         }
-
-                        if (!schemaIds.ContainsKey(writerSchemaString))
-                        {
-                            schemaIds.Add(writerSchemaString, newSchemaId);
-                        }
-                        else if (schemaIds[writerSchemaString] != newSchemaId)
-                        {
-                            schemaIds.Clear();
-                            registeredSchemas.Clear();
-                            throw new KafkaException(new Error(isKey ? ErrorCode.Local_KeySerialization : ErrorCode.Local_ValueSerialization, $"Duplicate schema registration encountered: Schema ids {schemaIds[writerSchemaString]} and {newSchemaId} are associated with the same schema."));
-                        }
-
-                        registeredSchemas.Add(subjectSchemaPair);
                     }
-                    schemaId = schemaIds[writerSchemaString];
+                    finally
+                    {
+                        serializeMutex.Release();
+                    }
                 }
-                finally
+
+                lock (schemaIds)
                 {
-                    serializeMutex.Release();
+                    schemaId = schemaIds[writerSchemaString];
                 }
 
                 using (var stream = new MemoryStream(initialBufferSize))
