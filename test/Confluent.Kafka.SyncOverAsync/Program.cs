@@ -70,6 +70,7 @@ namespace Confluent.Kafka.SyncOverAsync
             
             using (var producer = new ProducerBuilder<Null, string>(pConfig)
                 .SetValueSerializer(new SimpleAsyncSerializer().SyncOverAsync()) // may deadlock due to thread pool exhaustion.
+                // .SetValueSerializer(new SimpleAsyncSerializer()) // will never deadlock
                 // .SetValueSerializer(new SimpleSyncSerializer()) // will never deadlock.
                 .Build())
             {
@@ -81,23 +82,20 @@ namespace Confluent.Kafka.SyncOverAsync
                 for (int i=0; i<N; ++i)
                 {
                     // create a unique delivery report handler for each task.
-                    Func<int, Action> actionCreator = (taskNumber) =>
+                    Func<int, Func<Task>> actionCreator = (taskNumber) =>
                     {
-                        return () =>
+                        return async () =>
                         {
                             Console.WriteLine($"running task {taskNumber}");
-                            object waitObj = new object();
+                            var waitObj = new TaskCompletionSource<bool>();
 
-                            Action<DeliveryReport<Null, string>> handler = dr => 
+                            Action<DeliveryReport<Null, string>> handler = dr =>
                             {
                                 // in a deadlock scenario, the delivery handler will
                                 // never execute since execution of the Produce
                                 // method calls never progresses past serialization.
                                 Console.WriteLine($"delivery report: {dr.Value}");
-                                lock (waitObj)
-                                {
-                                    Monitor.Pulse(waitObj);
-                                }
+                                waitObj.SetResult(true);
                             };
 
                             try
@@ -114,17 +112,14 @@ namespace Confluent.Kafka.SyncOverAsync
                             // serializer blocks during the Produce call.
                             Console.WriteLine($"waiting for delivery report {taskNumber}");
 
-                            lock (waitObj)
-                            {
-                                Monitor.Wait(waitObj);
-                            }
+                            await waitObj.Task;
                         };
                     };
 
-                    tasks.Add(Task.Run(actionCreator(i)));
-                }
+                tasks.Add(Task.Run(actionCreator(i)));
+            }
 
-                Console.WriteLine($"waiting for {tasks.Count} produce tasks to complete. --> expecting deadlock <--");
+            Console.WriteLine($"waiting for {tasks.Count} produce tasks to complete. --> expecting deadlock <--");
                 Task.WaitAll(tasks.ToArray());
 
                 Console.WriteLine($"number outstanding produce requests on exit: {producer.Flush(TimeSpan.FromSeconds(10))}");
