@@ -866,71 +866,41 @@ namespace Confluent.Kafka
                 throw new InvalidOperationException("A delivery handler was specified, but delivery reports are disabled.");
             }
 
-            Headers headers = message.Headers ?? new Headers();
+            // Sync exceptions will be thrown here.
+            var task = ProduceImplAsync(
+                topicPartition,
+                message,
+                deliveryHandler == null
+                    ? null
+                    : new TypedDeliveryHandlerShim_Action(
+                        topicPartition.Topic,
+                        enableDeliveryReportKey ? message.Key : default(TKey),
+                        enableDeliveryReportValue ? message.Value : default(TValue),
+                        deliveryHandler));
 
-            byte[] keyBytes;
-            try
+            // Async exceptions must be passed through the handler.
+            if (deliveryHandler != null)
             {
-                keyBytes = (keySerializer != null)
-                    ? keySerializer.Serialize(message.Key, new SerializationContext(MessageComponentType.Key, topicPartition.Topic, headers))
-                    : throw new InvalidOperationException("Produce called with an IAsyncSerializer key serializer configured but an ISerializer is required.");
-            }
-            catch (Exception ex)
-            {
-                throw new ProduceException<TKey, TValue>(
-                    new Error(ErrorCode.Local_KeySerialization, ex.ToString()),
-                    new DeliveryResult<TKey, TValue>
+                task.ContinueWith(
+                    (t, obj) =>
                     {
-                        Message = message,
-                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset),
-                    },
-                    ex);
-            }
+                        // Avoid closures so lambda is cached.
+                        var tuple = (Tuple<TopicPartition, Message<TKey, TValue>, Action<DeliveryReport<TKey, TValue>>>)obj;
 
-            byte[] valBytes;
-            try
-            {
-                valBytes = (valueSerializer != null)
-                    ? valueSerializer.Serialize(message.Value, new SerializationContext(MessageComponentType.Value, topicPartition.Topic, headers))
-                    : throw new InvalidOperationException("Produce called with an IAsyncSerializer value serializer configured but an ISerializer is required.");
-            }
-            catch (Exception ex)
-            {
-                throw new ProduceException<TKey, TValue>(
-                    new Error(ErrorCode.Local_ValueSerialization, ex.ToString()),
-                    new DeliveryResult<TKey, TValue>
-                    {
-                        Message = message,
-                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset),
-                    },
-                    ex);
-            }
-
-            try
-            {
-                ProduceImpl(
-                    topicPartition.Topic,
-                    valBytes, 0, valBytes == null ? 0 : valBytes.Length,
-                    keyBytes, 0, keyBytes == null ? 0 : keyBytes.Length,
-                    message.Timestamp, topicPartition.Partition,
-                    headers,
-                    deliveryHandler == null
-                        ? null
-                        : new TypedDeliveryHandlerShim_Action(
-                            topicPartition.Topic,
-                            enableDeliveryReportKey ? message.Key : default(TKey),
-                            enableDeliveryReportValue ? message.Value : default(TValue),
-                            deliveryHandler));
-            }
-            catch (KafkaException ex)
-            {
-                throw new ProduceException<TKey, TValue>(
-                    ex.Error,
-                    new DeliveryReport<TKey, TValue>
+                        var ex = t.Exception.GetBaseException();
+                        var dr = new DeliveryReport<TKey, TValue>
                         {
-                            Message = message,
-                            TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
-                        });
+                            Error = ex is KafkaException kafkaEx
+                                ? kafkaEx.Error
+                                : new Error(ErrorCode.Local_Application, ex.ToString()),
+                            TopicPartitionOffset = new TopicPartitionOffset(tuple.Item1, Offset.Unset),
+                            Message = tuple.Item2,
+                        };
+
+                        tuple.Item3(dr);
+                    },
+                    Tuple.Create(topicPartition, message, deliveryHandler),
+                    TaskContinuationOptions.OnlyOnFaulted);
             }
         }
 
