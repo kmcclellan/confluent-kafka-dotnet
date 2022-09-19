@@ -352,7 +352,7 @@ namespace Confluent.Kafka
             }
             catch (Exception ex)
             {
-                handler.HandleDeliveryReport(
+                handler?.HandleDeliveryReport(
                     new DeliveryReport<Null, Null>
                     {
                         Error = new Error(ErrorCode.Local_KeySerialization, ex.ToString()),
@@ -371,7 +371,7 @@ namespace Confluent.Kafka
             }
             catch (Exception ex)
             {
-                handler.HandleDeliveryReport(
+                handler?.HandleDeliveryReport(
                     new DeliveryReport<Null, Null>
                     {
                         Error = new Error(ErrorCode.Local_ValueSerialization, ex.ToString()),
@@ -392,7 +392,7 @@ namespace Confluent.Kafka
             }
             catch (KafkaException ex)
             {
-                handler.HandleDeliveryReport(
+                handler?.HandleDeliveryReport(
                     new DeliveryReport<Null, Null>
                     {
                         Error = ex.Error,
@@ -913,8 +913,10 @@ namespace Confluent.Kafka
                     {
                         Key = Key,
                         Value = Value,
-                        Timestamp = deliveryReport.Message.Timestamp,
-                        Headers = deliveryReport.Message.Headers
+                        Timestamp = deliveryReport.Message == null
+                            ? new Timestamp(0, TimestampType.NotAvailable)
+                            : deliveryReport.Message.Timestamp,
+                        Headers = deliveryReport.Message?.Headers
                     }
                 };
                 // topic is cached in this object, not set in the deliveryReport to avoid the 
