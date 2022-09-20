@@ -861,6 +861,51 @@ namespace Confluent.Kafka
             Message<TKey, TValue> message,
             Action<DeliveryReport<TKey, TValue>> deliveryHandler = null)
         {
+            if (asyncKeySerializer != null || asyncValueSerializer != null)
+            {
+                var handlerShim = deliveryHandler == null || !enableDeliveryReports
+                        ? null
+                        : new TypedDeliveryHandlerShim_Action(
+                            topicPartition.Topic,
+                            enableDeliveryReportKey ? message.Key : default(TKey),
+                            enableDeliveryReportValue ? message.Value : default(TValue),
+                            deliveryHandler);
+
+                // Async exceptions must be passed through delivery handler.
+                ProduceImplAsync(topicPartition, message, handlerShim)
+                    .ContinueWith(
+                        (task, obj) =>
+                        {
+                            // Avoid closures so lambda is cached by compiler.
+                            var hdlr = obj as Action<DeliveryReport<TKey, TValue>>;
+
+                            if (task.Exception.GetBaseException() is ProduceException<TKey, TValue> ex)
+                            {
+                                hdlr?.Invoke(
+                                    new DeliveryReport<TKey, TValue>
+                                    {
+                                        Error = ex.Error,
+                                        TopicPartitionOffset = ex.DeliveryResult.TopicPartitionOffset,
+                                        Status = ex.DeliveryResult.Status,
+                                        Message = ex.DeliveryResult.Message,
+                                    });
+                            }
+                            else
+                            {
+                                // Could be a system exception.
+                                hdlr?.Invoke(
+                                    new DeliveryReport<TKey, TValue>
+                                    {
+                                        Error = new Error(ErrorCode.Local_Application, task.Exception.ToString()),
+                                    });
+                            }
+                        },
+                        deliveryHandler,
+                        TaskContinuationOptions.OnlyOnFaulted);
+
+                return;
+            }
+
             if (deliveryHandler != null && !enableDeliveryReports)
             {
                 throw new InvalidOperationException("A delivery handler was specified, but delivery reports are disabled.");
