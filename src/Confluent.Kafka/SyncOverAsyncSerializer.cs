@@ -43,6 +43,7 @@ namespace Confluent.Kafka.SyncOverAsync
     ///        this scenario should not commonly occur in
     ///        practice.
     /// </summary>
+    [Obsolete("IAsyncSerializer<T> is fully supported and should be used instead of SyncOverAsyncSerializer<T>.")]
     public class SyncOverAsyncSerializer<T> : ISerializer<T>
     {
         private IAsyncSerializer<T> asyncSerializer { get; }
@@ -86,6 +87,7 @@ namespace Confluent.Kafka.SyncOverAsync
         ///     one. For more information on the potential
         ///     pitfalls in doing this, refer to <see cref="Confluent.Kafka.SyncOverAsync.SyncOverAsyncSerializer{T}" />.
         /// </summary>
+        [Obsolete("IAsyncSerializer<T> is fully supported and should be used instead of SyncOverAsyncSerializer<T>.")]
         public static ISerializer<T> AsSyncOverAsync<T>(this IAsyncSerializer<T> asyncSerializer)
             => new SyncOverAsyncSerializer<T>(asyncSerializer);
     }
