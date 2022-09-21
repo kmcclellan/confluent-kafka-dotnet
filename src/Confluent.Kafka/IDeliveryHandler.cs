@@ -14,11 +14,18 @@
 //
 // Refer to LICENSE for more information.
 
+using System;
 
 namespace Confluent.Kafka
 {
-    internal interface IDeliveryHandler
+    internal interface IDeliveryHandler<TKey, TValue> : IDisposable
     {
-        void HandleDeliveryReport(DeliveryReport<Null, Null> deliveryReport);
+        string Topic { get; }
+
+        TKey Key { get; }
+
+        TValue Value { get; }
+
+        void HandleDeliveryReport(DeliveryReport<TKey, TValue> deliveryReport);
     }
 }

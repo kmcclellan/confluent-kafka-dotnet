@@ -216,16 +216,16 @@ namespace Confluent.Kafka
                 }
 
                 var gch = GCHandle.FromIntPtr(msg._private);
-                var deliveryHandler = (IDeliveryHandler) gch.Target;
+                var deliveryHandler = (IDeliveryHandler<TKey, TValue>) gch.Target;
                 gch.Free();
 
                 Headers headers = null;
                 if (this.enableDeliveryReportHeaders) 
                 {
-                    headers = new Headers();
                     Librdkafka.message_headers(rkmessage, out IntPtr hdrsPtr);
                     if (hdrsPtr != IntPtr.Zero)
                     {
+                        headers = new Headers();
                         for (var i=0; ; ++i)
                         {
                             var err = Librdkafka.header_get_all(hdrsPtr, (IntPtr)i, out IntPtr namep, out IntPtr valuep, out IntPtr sizep);
@@ -259,15 +259,20 @@ namespace Confluent.Kafka
                 }
 
                 deliveryHandler.HandleDeliveryReport(
-                    new DeliveryReport<Null, Null>
+                    new DeliveryReport<TKey, TValue>
                     {
-                        // Topic is not set here in order to avoid the marshalling cost.
-                        // Instead, the delivery handler is expected to cache the topic string.
-                        Partition = msg.partition, 
+                        Topic = deliveryHandler.Topic,
+                        Partition = msg.partition,
                         Offset = msg.offset, 
                         Error = KafkaHandle.CreatePossiblyFatalError(msg.err, null),
                         Status = messageStatus,
-                        Message = new Message<Null, Null> { Timestamp = new Timestamp(timestamp, (TimestampType)timestampType), Headers = headers }
+                        Message = new Message<TKey, TValue>
+                        {
+                            Timestamp = new Timestamp(timestamp, (TimestampType)timestampType),
+                            Headers = headers,
+                            Key = deliveryHandler.Key,
+                            Value = deliveryHandler.Value,
+                        }
                     }
                 );
             }
@@ -282,7 +287,7 @@ namespace Confluent.Kafka
             Message<TKey, TValue> message,
             byte[] keyBytes,
             byte[] valBytes,
-            IDeliveryHandler deliveryHandler)
+            IDeliveryHandler<TKey, TValue> deliveryHandler)
         {
             if (message.Timestamp.Type != TimestampType.CreateTime && message.Timestamp != Timestamp.Default)
             {
@@ -329,7 +334,7 @@ namespace Confluent.Kafka
         private Task ProduceImplAsync(
             TopicPartition topicPartition,
             Message<TKey, TValue> message,
-            IDeliveryHandler deliveryHandler)
+            IDeliveryHandler<TKey, TValue> deliveryHandler)
         {
             byte[] keyBytes = null, valBytes = null;
 
@@ -841,16 +846,11 @@ namespace Confluent.Kafka
         {
             if (enableDeliveryReports)
             {
-                var handler = new TypedTaskDeliveryHandlerShim(
+                var handler = new TaskDeliveryHandler(
                     topicPartition.Topic,
                     enableDeliveryReportKey ? message.Key : default(TKey),
-                    enableDeliveryReportValue ? message.Value : default(TValue));
-
-                if (cancellationToken.CanBeCanceled)
-                {
-                    handler.CancellationTokenRegistration
-                        = cancellationToken.Register(() => handler.TrySetCanceled());
-                }
+                    enableDeliveryReportValue ? message.Value : default(TValue),
+                    cancellationToken);
 
                 await ProduceImplAsync(topicPartition, message, handler);
 
@@ -904,7 +904,7 @@ namespace Confluent.Kafka
                 message,
                 deliveryHandler == null
                     ? null
-                    : new TypedDeliveryHandlerShim_Action(
+                    : new CallbackDeliveryHandler(
                         topicPartition.Topic,
                         enableDeliveryReportKey ? message.Key : default(TKey),
                         enableDeliveryReportValue ? message.Value : default(TValue),
@@ -942,108 +942,74 @@ namespace Confluent.Kafka
             }
         }
 
-        private class TypedTaskDeliveryHandlerShim : TaskCompletionSource<DeliveryResult<TKey, TValue>>, IDeliveryHandler
+        private class TaskDeliveryHandler : TaskCompletionSource<DeliveryResult<TKey, TValue>>, IDeliveryHandler<TKey, TValue>
         {
-            public TypedTaskDeliveryHandlerShim(string topic, TKey key, TValue val)
+            private readonly CancellationTokenRegistration cancelRegistration;
+
+            public TaskDeliveryHandler(string topic, TKey key, TValue value, CancellationToken cancellationToken)
                 : base(TaskCreationOptions.RunContinuationsAsynchronously)
             {
                 Topic = topic;
                 Key = key;
-                Value = val;
+                Value = value;
+
+                cancelRegistration = cancellationToken.Register(
+                    obj => ((TaskCompletionSource<DeliveryResult<TKey, TValue>>)obj).TrySetCanceled(), this);
             }
 
-            public CancellationTokenRegistration CancellationTokenRegistration;
+            public string Topic { get; }
 
-            public string Topic;
+            public TKey Key { get; }
 
-            public TKey Key;
+            public TValue Value { get; }
 
-            public TValue Value;
-
-            public void HandleDeliveryReport(DeliveryReport<Null, Null> deliveryReport)
+            public void HandleDeliveryReport(DeliveryReport<TKey, TValue> deliveryReport)
             {
-                CancellationTokenRegistration.Dispose();
-
-                if (deliveryReport == null)
-                {
-                    TrySetResult(null);
-                    return;
-                }
-
-                var dr = new DeliveryResult<TKey, TValue>
-                {
-                    TopicPartitionOffset = deliveryReport.TopicPartitionOffset,
-                    Status = deliveryReport.Status,
-                    Message = new Message<TKey, TValue>
-                    {
-                        Key = Key,
-                        Value = Value,
-                        Timestamp = deliveryReport.Message.Timestamp,
-                        Headers = deliveryReport.Message.Headers
-                    }
-                };
-                // topic is cached in this object, not set in the deliveryReport to avoid the 
-                // cost of marshalling it.
-                dr.Topic = Topic;
-
                 if (deliveryReport.Error.IsError)
                 {
-                    TrySetException(new ProduceException<TKey, TValue>(deliveryReport.Error, dr));
+                    TrySetException(new ProduceException<TKey, TValue>(deliveryReport.Error, deliveryReport));
                 }
                 else
                 {
-                    TrySetResult(dr);
+                    TrySetResult(deliveryReport);
                 }
+            }
+
+            public void Dispose()
+            {
+                cancelRegistration.Dispose();
             }
         }
 
-        private class TypedDeliveryHandlerShim_Action : IDeliveryHandler
+        private class CallbackDeliveryHandler : IDeliveryHandler<TKey, TValue>
         {
-            public TypedDeliveryHandlerShim_Action(string topic, TKey key, TValue val, Action<DeliveryReport<TKey, TValue>> handler)
+            private readonly Action<DeliveryReport<TKey, TValue>> handler;
+
+            public CallbackDeliveryHandler(
+                string topic,
+                TKey key,
+                TValue value,
+                Action<DeliveryReport<TKey, TValue>> handler)
             {
                 Topic = topic;
                 Key = key;
-                Value = val;
-                Handler = handler;
+                Value = value;
+                this.handler = handler;
             }
 
-            public string Topic;
+            public string Topic { get; }
 
-            public TKey Key;
+            public TKey Key { get; }
 
-            public TValue Value;
+            public TValue Value { get; }
 
-            public Action<DeliveryReport<TKey, TValue>> Handler;
-
-            public void HandleDeliveryReport(DeliveryReport<Null, Null> deliveryReport)
+            public void HandleDeliveryReport(DeliveryReport<TKey, TValue> deliveryReport)
             {
-                if (deliveryReport == null)
-                {
-                    return;
-                }
+                handler(deliveryReport);
+            }
 
-                var dr = new DeliveryReport<TKey, TValue>
-                {
-                    TopicPartitionOffsetError = deliveryReport.TopicPartitionOffsetError,
-                    Status = deliveryReport.Status,
-                    Message = new Message<TKey, TValue> 
-                    {
-                        Key = Key,
-                        Value = Value,
-                        Timestamp = deliveryReport.Message == null 
-                            ? new Timestamp(0, TimestampType.NotAvailable) 
-                            : deliveryReport.Message.Timestamp,
-                        Headers = deliveryReport.Message?.Headers
-                    }
-                };
-                // topic is cached in this object, not set in the deliveryReport to avoid the 
-                // cost of marshalling it.
-                dr.Topic = Topic;
-
-                if (Handler != null)
-                {
-                    Handler(dr);
-                }
+            public void Dispose()
+            {
             }
         }
 
