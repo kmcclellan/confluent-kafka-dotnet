@@ -899,49 +899,9 @@ namespace Confluent.Kafka
                 throw new InvalidOperationException("A delivery handler was specified, but delivery reports are disabled.");
             }
 
-            byte[] keyBytes;
-            try
-            {
-                keyBytes = (keySerializer != null)
-                    ? keySerializer.Serialize(message.Key, new SerializationContext(MessageComponentType.Key, topicPartition.Topic, message.Headers))
-                    : throw new InvalidOperationException("Produce called with an IAsyncSerializer key serializer configured but an ISerializer is required.");
-            }
-            catch (Exception ex)
-            {
-                throw new ProduceException<TKey, TValue>(
-                    new Error(ErrorCode.Local_KeySerialization, ex.ToString()),
-                    new DeliveryResult<TKey, TValue>
-                    {
-                        Message = message,
-                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset),
-                    },
-                    ex);
-            }
-
-            byte[] valBytes;
-            try
-            {
-                valBytes = (valueSerializer != null)
-                    ? valueSerializer.Serialize(message.Value, new SerializationContext(MessageComponentType.Value, topicPartition.Topic, message.Headers))
-                    : throw new InvalidOperationException("Produce called with an IAsyncSerializer value serializer configured but an ISerializer is required.");
-            }
-            catch (Exception ex)
-            {
-                throw new ProduceException<TKey, TValue>(
-                    new Error(ErrorCode.Local_ValueSerialization, ex.ToString()),
-                    new DeliveryResult<TKey, TValue>
-                    {
-                        Message = message,
-                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset),
-                    },
-                    ex);
-            }
-
-            ProduceImpl(
+            var task = ProduceImplAsync(
                 topicPartition,
                 message,
-                keyBytes,
-                valBytes,
                 deliveryHandler == null
                     ? null
                     : new TypedDeliveryHandlerShim_Action(
@@ -949,6 +909,37 @@ namespace Confluent.Kafka
                         enableDeliveryReportKey ? message.Key : default(TKey),
                         enableDeliveryReportValue ? message.Value : default(TValue),
                         deliveryHandler));
+
+            if (task.Status != TaskStatus.RanToCompletion)
+            {
+                task.ContinueWith(
+                    (t, obj) =>
+                    {
+                        // Avoid closures so the lambda is cached.
+                        var tuple = (Tuple<Producer<TKey, TValue>, Action<DeliveryReport<TKey, TValue>>>)obj;
+
+                        if (t.Exception.GetBaseException() is ProduceException<TKey, TValue> ex)
+                        {
+                            try
+                            {
+                                tuple.Item2?.Invoke(
+                                    new DeliveryReport<TKey, TValue>
+                                    {
+                                        Error = ex.Error,
+                                        TopicPartitionOffset = ex.DeliveryResult.TopicPartitionOffset,
+                                        Message = ex.DeliveryResult.Message,
+                                        Status = ex.DeliveryResult.Status,
+                                    });
+                            }
+                            catch (Exception ex2)
+                            {
+                                tuple.Item1.handlerException = ex2;
+                            }
+                        }
+                    },
+                    Tuple.Create(this, deliveryHandler),
+                    TaskContinuationOptions.OnlyOnFaulted);
+            }
         }
 
         private class TypedTaskDeliveryHandlerShim : TaskCompletionSource<DeliveryResult<TKey, TValue>>, IDeliveryHandler
