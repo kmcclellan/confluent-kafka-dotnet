@@ -326,50 +326,112 @@ namespace Confluent.Kafka
             }
         }
 
-        private async Task ProduceImplAsync(
+        private Task ProduceImplAsync(
             TopicPartition topicPartition,
             Message<TKey, TValue> message,
             IDeliveryHandler deliveryHandler)
         {
-            byte[] keyBytes;
-            try
+            byte[] keyBytes = null, valBytes = null;
+
+            if (keySerializer != null)
             {
-                keyBytes = (keySerializer != null)
-                    ? keySerializer.Serialize(message.Key, new SerializationContext(MessageComponentType.Key, topicPartition.Topic, message.Headers))
-                    : await asyncKeySerializer.SerializeAsync(message.Key, new SerializationContext(MessageComponentType.Key, topicPartition.Topic, message.Headers)).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                throw new ProduceException<TKey, TValue>(
-                    new Error(ErrorCode.Local_KeySerialization),
-                    new DeliveryResult<TKey, TValue>
-                    {
-                        Message = message,
-                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
-                    },
-                    ex);
+                try
+                {
+                    keyBytes = keySerializer.Serialize(
+                        message.Key,
+                        new SerializationContext(MessageComponentType.Key, topicPartition.Topic, message.Headers));
+                }
+                catch (Exception ex)
+                {
+                    throw new ProduceException<TKey, TValue>(
+                        new Error(ErrorCode.Local_KeySerialization),
+                        new DeliveryResult<TKey, TValue>
+                        {
+                            Message = message,
+                            TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
+                        },
+                        ex);
+                }
             }
 
-            byte[] valBytes;
-            try
+            if (valueSerializer != null)
             {
-                valBytes = (valueSerializer != null)
-                    ? valueSerializer.Serialize(message.Value, new SerializationContext(MessageComponentType.Value, topicPartition.Topic, message.Headers))
-                    : await asyncValueSerializer.SerializeAsync(message.Value, new SerializationContext(MessageComponentType.Value, topicPartition.Topic, message.Headers)).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                throw new ProduceException<TKey, TValue>(
-                    new Error(ErrorCode.Local_ValueSerialization),
-                    new DeliveryResult<TKey, TValue>
-                    {
-                        Message = message,
-                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
-                    },
-                    ex);
+                try
+                {
+                    valBytes = valueSerializer.Serialize(
+                        message.Value,
+                        new SerializationContext(MessageComponentType.Value, topicPartition.Topic, message.Headers));
+                }
+                catch (Exception ex)
+                {
+                    throw new ProduceException<TKey, TValue>(
+                        new Error(ErrorCode.Local_ValueSerialization),
+                        new DeliveryResult<TKey, TValue>
+                        {
+                            Message = message,
+                            TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
+                        },
+                        ex);
+                }
             }
 
-            ProduceImpl(topicPartition, message, keyBytes, valBytes, deliveryHandler);
+            if (asyncKeySerializer == null && asyncValueSerializer == null)
+            {
+                // Fast path: avoid async overhead
+                ProduceImpl(topicPartition, message, keyBytes, valBytes, deliveryHandler);
+                return Task.CompletedTask;
+            }
+
+            return ProduceAsync();
+
+            async Task ProduceAsync()
+            {
+                if (asyncKeySerializer != null)
+                {
+                    try
+                    {
+                        keyBytes = await asyncKeySerializer.SerializeAsync(
+                            message.Key,
+                            new SerializationContext(MessageComponentType.Key, topicPartition.Topic, message.Headers))
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new ProduceException<TKey, TValue>(
+                            new Error(ErrorCode.Local_KeySerialization),
+                            new DeliveryResult<TKey, TValue>
+                            {
+                                Message = message,
+                                TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
+                            },
+                            ex);
+                    }
+                }
+
+                if (asyncValueSerializer != null)
+                {
+                    try
+                    {
+                        valBytes = await asyncValueSerializer.SerializeAsync(
+                            message.Value,
+                            new SerializationContext(MessageComponentType.Value, topicPartition.Topic, message.Headers))
+                            .ConfigureAwait(false);
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new ProduceException<TKey, TValue>(
+                            new Error(ErrorCode.Local_ValueSerialization),
+                            new DeliveryResult<TKey, TValue>
+                            {
+                                Message = message,
+                                TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
+                            },
+                            ex);
+                    }
+                }
+
+                ProduceImpl(topicPartition, message, keyBytes, valBytes, deliveryHandler);
+            }
         }
 
 
