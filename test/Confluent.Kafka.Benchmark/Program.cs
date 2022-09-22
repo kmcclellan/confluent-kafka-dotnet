@@ -84,6 +84,7 @@ namespace Confluent.Kafka.Benchmark
             string username = null;
             string password = null;
             int numberOfSamples = 1;
+            string outputFile = null;
 
             OptionSet p = new OptionSet
             {
@@ -100,6 +101,7 @@ namespace Confluent.Kafka.Benchmark
                 { "u=", "SASL username (will also set protocol=SASL_SSL, mechanism=PLAIN)", u => username = u },
                 { "w=", "SASL password", w => password = w },
                 { "samples=", $"number of duration samples to take (throughput mode only, default: {numberOfSamples})", t => numberOfSamples = int.Parse(t) },
+                { "output=", "output file for samples (optional)", f => outputFile = f },
                 { "help", "show this message and exit", v => showHelp = v != null },
             };
 
@@ -122,9 +124,9 @@ namespace Confluent.Kafka.Benchmark
             if (mode == "throughput")
             {
                 var sampleMessages = numberOfMessages / numberOfSamples;
-                BenchmarkProducer.TaskProduce(bootstrapServers, topicName, sampleMessages, messageSize, headerCount, numberOfSamples, username, password);
-                var firstMessageOffset = BenchmarkProducer.DeliveryHandlerProduce(bootstrapServers, topicName, sampleMessages, messageSize, headerCount, numberOfSamples, username, password);
-                BenchmarkConsumer.Consume(bootstrapServers, topicName, group, firstMessageOffset, sampleMessages, headerCount, numberOfSamples, username, password);
+                BenchmarkProducer.TaskProduce(bootstrapServers, topicName, sampleMessages, messageSize, headerCount, numberOfSamples, username, password, outputFile);
+                var firstMessageOffset = BenchmarkProducer.DeliveryHandlerProduce(bootstrapServers, topicName, sampleMessages, messageSize, headerCount, numberOfSamples, username, password, outputFile);
+                BenchmarkConsumer.Consume(bootstrapServers, topicName, group, firstMessageOffset, sampleMessages, headerCount, numberOfSamples, username, password, outputFile);
             }
             else if (mode == "latency")
             {

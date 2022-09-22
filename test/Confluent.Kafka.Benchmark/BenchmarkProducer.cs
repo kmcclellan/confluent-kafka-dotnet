@@ -15,6 +15,7 @@
 // Refer to LICENSE for more information.
 
 using System;
+using System.IO;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Linq;
@@ -33,7 +34,8 @@ namespace Confluent.Kafka.Benchmark
             int nHeaders,
             bool useDeliveryHandler,
             string username,
-            string password)
+            string password,
+            string outputFile)
         {
             // mirrors the librdkafka performance test example.
             var config = new ProducerConfig
@@ -162,6 +164,13 @@ namespace Confluent.Kafka.Benchmark
 
                     Console.WriteLine($"Produced {nMessages} messages in {duration/10000.0:F0}ms");
                     Console.WriteLine($"{nMessages / (duration/10000.0):F0}k msg/s");
+
+                    if (outputFile != null)
+                    {
+                        File.AppendAllText(
+                            outputFile,
+                            $"produce-{(useDeliveryHandler ? "callback" : "task")},{nMessages},{duration}{Environment.NewLine}");
+                    }
                 }
 
                 if (nTests > 1)
@@ -179,14 +188,14 @@ namespace Confluent.Kafka.Benchmark
         ///     Producer benchmark masquerading as an integration test.
         ///     Uses Task based produce method.
         /// </summary>
-        public static long TaskProduce(string bootstrapServers, string topic, int nMessages, int msgSize, int nHeaders, int nTests, string username, string password)
-            => BenchmarkProducerImpl(bootstrapServers, topic, nMessages, msgSize, nTests, nHeaders, false, username, password);
+        public static long TaskProduce(string bootstrapServers, string topic, int nMessages, int msgSize, int nHeaders, int nTests, string username, string password, string outputFile)
+            => BenchmarkProducerImpl(bootstrapServers, topic, nMessages, msgSize, nTests, nHeaders, false, username, password, outputFile);
 
         /// <summary>
         ///     Producer benchmark (with custom delivery handler) masquerading
         ///     as an integration test. Uses Task based produce method.
         /// </summary>
-        public static long DeliveryHandlerProduce(string bootstrapServers, string topic, int nMessages, int msgSize, int nHeaders, int nTests, string username, string password)
-            => BenchmarkProducerImpl(bootstrapServers, topic, nMessages, msgSize, nTests, nHeaders, true, username, password);
+        public static long DeliveryHandlerProduce(string bootstrapServers, string topic, int nMessages, int msgSize, int nHeaders, int nTests, string username, string password, string outputFile)
+            => BenchmarkProducerImpl(bootstrapServers, topic, nMessages, msgSize, nTests, nHeaders, true, username, password, outputFile);
     }
 }

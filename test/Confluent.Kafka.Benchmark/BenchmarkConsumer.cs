@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 
 
@@ -23,7 +24,7 @@ namespace Confluent.Kafka.Benchmark
 {
     public static class BenchmarkConsumer
     {
-        public static void BenchmarkConsumerImpl(string bootstrapServers, string topic, string group, long firstMessageOffset, int nMessages, int nTests, int nHeaders, string username, string password)
+        public static void BenchmarkConsumerImpl(string bootstrapServers, string topic, string group, long firstMessageOffset, int nMessages, int nTests, int nHeaders, string username, string password, string outputFile)
         {
             var consumerConfig = new ConsumerConfig
             {
@@ -69,6 +70,11 @@ namespace Confluent.Kafka.Benchmark
 
                     Console.WriteLine($"Consumed {nMessages-1} messages in {duration/10000.0:F0}ms");
                     Console.WriteLine($"{(nMessages-1) / (duration/10000.0):F0}k msg/s");
+
+                    if (outputFile != null)
+                    {
+                        File.AppendAllText(outputFile, $"consume,{nMessages - 1},{duration}{Environment.NewLine}");
+                    }
                 }
 
                 if (nTests > 1)
@@ -78,7 +84,7 @@ namespace Confluent.Kafka.Benchmark
             }
         }
 
-        public static void Consume(string bootstrapServers, string topic, string group, long firstMessageOffset, int nMessages, int nHeaders, int nTests, string username, string password)
-            => BenchmarkConsumerImpl(bootstrapServers, topic, group, firstMessageOffset, nMessages, nTests, nHeaders, username, password);
+        public static void Consume(string bootstrapServers, string topic, string group, long firstMessageOffset, int nMessages, int nHeaders, int nTests, string username, string password, string outputFile)
+            => BenchmarkConsumerImpl(bootstrapServers, topic, group, firstMessageOffset, nMessages, nTests, nHeaders, username, password, outputFile);
     }
 }
