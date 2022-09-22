@@ -62,6 +62,8 @@ namespace Confluent.Kafka.Benchmark
                 }
             }
 
+            var totalDuration = 0L;
+
             using (var producer = new ProducerBuilder<Null, byte[]>(config).Build())
             {
                 for (var j=0; j<nTests; j += 1)
@@ -156,9 +158,15 @@ namespace Confluent.Kafka.Benchmark
                     }
 
                     var duration = DateTime.Now.Ticks - startTime;
+                    totalDuration += duration;
 
                     Console.WriteLine($"Produced {nMessages} messages in {duration/10000.0:F0}ms");
                     Console.WriteLine($"{nMessages / (duration/10000.0):F0}k msg/s");
+                }
+
+                if (nTests > 1)
+                {
+                    Console.WriteLine($"Overall average: {10000d * nMessages * nTests / totalDuration:F0}k msg/s");
                 }
 
                 producer.Flush(TimeSpan.FromSeconds(10));

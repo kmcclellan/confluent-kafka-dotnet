@@ -83,6 +83,7 @@ namespace Confluent.Kafka.Benchmark
             short replicationFactor = 3;
             string username = null;
             string password = null;
+            int numberOfSamples = 1;
 
             OptionSet p = new OptionSet
             {
@@ -98,6 +99,7 @@ namespace Confluent.Kafka.Benchmark
                 { "f=", $"replication factor when creating topic (default {replicationFactor})", f => replicationFactor = short.Parse(f) },
                 { "u=", "SASL username (will also set protocol=SASL_SSL, mechanism=PLAIN)", u => username = u },
                 { "w=", "SASL password", w => password = w },
+                { "samples=", $"number of duration samples to take (throughput mode only, default: {numberOfSamples})", t => numberOfSamples = int.Parse(t) },
                 { "help", "show this message and exit", v => showHelp = v != null },
             };
 
@@ -119,10 +121,10 @@ namespace Confluent.Kafka.Benchmark
 
             if (mode == "throughput")
             {
-                const int NUMBER_OF_TESTS = 1;
-                BenchmarkProducer.TaskProduce(bootstrapServers, topicName, numberOfMessages, messageSize, headerCount, NUMBER_OF_TESTS, username, password);
-                var firstMessageOffset = BenchmarkProducer.DeliveryHandlerProduce(bootstrapServers, topicName, numberOfMessages, messageSize, headerCount, NUMBER_OF_TESTS, username, password);
-                BenchmarkConsumer.Consume(bootstrapServers, topicName, group, firstMessageOffset, numberOfMessages, headerCount, NUMBER_OF_TESTS, username, password);
+                var sampleMessages = numberOfMessages / numberOfSamples;
+                BenchmarkProducer.TaskProduce(bootstrapServers, topicName, sampleMessages, messageSize, headerCount, numberOfSamples, username, password);
+                var firstMessageOffset = BenchmarkProducer.DeliveryHandlerProduce(bootstrapServers, topicName, sampleMessages, messageSize, headerCount, numberOfSamples, username, password);
+                BenchmarkConsumer.Consume(bootstrapServers, topicName, group, firstMessageOffset, sampleMessages, headerCount, numberOfSamples, username, password);
             }
             else if (mode == "latency")
             {
