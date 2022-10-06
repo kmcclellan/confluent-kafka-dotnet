@@ -20,6 +20,7 @@ using System.Linq;
 using System.Threading;
 using Mono.Options;
 using Confluent.Kafka.Admin;
+using Confluent.SchemaRegistry;
 
 
 namespace Confluent.Kafka.Benchmark
@@ -83,6 +84,8 @@ namespace Confluent.Kafka.Benchmark
             short replicationFactor = 3;
             string username = null;
             string password = null;
+            SchemaType? schemaType = null;
+            SchemaRegistryConfig schemaConfig = new() { Url = "localhost:8081" };
 
             OptionSet p = new OptionSet
             {
@@ -98,6 +101,8 @@ namespace Confluent.Kafka.Benchmark
                 { "f=", $"replication factor when creating topic (default {replicationFactor})", f => replicationFactor = short.Parse(f) },
                 { "u=", "SASL username (will also set protocol=SASL_SSL, mechanism=PLAIN)", u => username = u },
                 { "w=", "SASL password", w => password = w },
+                { "schema=", "The schema type used for serialization, if any.", s => schemaType = Enum.Parse<SchemaType>(s, true) },
+                { "registry=", "The schema registry URL to use, if any.", s => schemaConfig.Url = s },
                 { "help", "show this message and exit", v => showHelp = v != null },
             };
 
@@ -120,8 +125,8 @@ namespace Confluent.Kafka.Benchmark
             if (mode == "throughput")
             {
                 const int NUMBER_OF_TESTS = 1;
-                BenchmarkProducer.TaskProduce(bootstrapServers, topicName, numberOfMessages, messageSize, headerCount, NUMBER_OF_TESTS, username, password);
-                var firstMessageOffset = BenchmarkProducer.DeliveryHandlerProduce(bootstrapServers, topicName, numberOfMessages, messageSize, headerCount, NUMBER_OF_TESTS, username, password);
+                BenchmarkProducer.TaskProduce(bootstrapServers, topicName, numberOfMessages, messageSize, headerCount, NUMBER_OF_TESTS, username, password, schemaType, schemaConfig);
+                var firstMessageOffset = BenchmarkProducer.DeliveryHandlerProduce(bootstrapServers, topicName, numberOfMessages, messageSize, headerCount, NUMBER_OF_TESTS, username, password, schemaType, schemaConfig);
                 BenchmarkConsumer.Consume(bootstrapServers, topicName, group, firstMessageOffset, numberOfMessages, headerCount, NUMBER_OF_TESTS, username, password);
             }
             else if (mode == "latency")
