@@ -16,6 +16,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
 
 
@@ -66,6 +67,10 @@ namespace Confluent.Kafka.Benchmark
 
                     Console.WriteLine($"Consumed {nMessages-1} messages in {duration/10000.0:F0}ms");
                     Console.WriteLine($"{(nMessages-1) / (duration/10000.0):F0}k msg/s");
+
+                    File.AppendAllText(
+                        Path.Join(AppContext.BaseDirectory, "output.csv"),
+                        $"consume,,{nMessages - 1},{duration}{Environment.NewLine}");
                 }
             }
         }

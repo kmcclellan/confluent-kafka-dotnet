@@ -15,6 +15,7 @@
 // Refer to LICENSE for more information.
 
 using System;
+using System.IO;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Linq;
@@ -247,6 +248,10 @@ namespace Confluent.Kafka.Benchmark
 
                     Console.WriteLine($"Produced {nMessages} messages in {duration/10000.0:F0}ms");
                     Console.WriteLine($"{nMessages / (duration/10000.0):F0}k msg/s");
+
+                    File.AppendAllText(
+                        Path.Join(AppContext.BaseDirectory, "output.csv"),
+                        $"produce-{(useDeliveryHandler ? "callback" : "task")},{serializer?.GetType()},{nMessages},{duration}{Environment.NewLine}");
                 }
 
                 producer.Flush(TimeSpan.FromSeconds(10));
