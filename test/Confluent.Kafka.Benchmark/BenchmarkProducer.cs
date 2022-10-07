@@ -20,23 +20,90 @@ using System.Threading.Tasks;
 using System.Threading;
 using System.Linq;
 using Confluent.SchemaRegistry;
+using Confluent.SchemaRegistry.Serdes;
+using Confluent.Kafka.SyncOverAsync;
 
 namespace Confluent.Kafka.Benchmark
 {
     public static class BenchmarkProducer
     {
         private static long BenchmarkProducerImpl(
-            string bootstrapServers, 
-            string topic, 
+            string bootstrapServers,
+            string topic,
             int nMessages,
             int msgSize,
-            int nTests, 
+            int nTests,
             int nHeaders,
             bool useDeliveryHandler,
             string username,
             string password,
             SchemaType? schemaType,
             SchemaRegistryConfig schemaConfig)
+        {
+            byte cnt = 0;
+            var val = new byte[msgSize].Select(a => ++cnt).ToArray();
+
+            if (schemaType != null)
+            {
+                using var schemaClient = new CachedSchemaRegistryClient(schemaConfig);
+
+                switch (schemaType)
+                {
+                    case SchemaType.Avro:
+                        return BenchmarkProducerImpl(
+                            new AvroPayload { Data = val },
+                            new AvroSerializer<AvroPayload>(schemaClient),
+                            bootstrapServers,
+                            topic,
+                            nMessages,
+                            nTests,
+                            nHeaders,
+                            useDeliveryHandler,
+                            username,
+                            password);
+
+                    case SchemaType.Json:
+                        return BenchmarkProducerImpl(
+                            val,
+                            new JsonSerializer<byte[]>(schemaClient),
+                            bootstrapServers,
+                            topic,
+                            nMessages,
+                            nTests,
+                            nHeaders,
+                            useDeliveryHandler,
+                            username,
+                            password);
+
+                    case SchemaType.Protobuf:
+                        throw new NotImplementedException();
+                }
+            }
+
+            return BenchmarkProducerImpl(
+                val,
+                null,
+                bootstrapServers,
+                topic,
+                nMessages,
+                nTests,
+                nHeaders,
+                useDeliveryHandler,
+                username,
+                password);
+        }
+
+        private static long BenchmarkProducerImpl<TPayload>(
+            TPayload val,
+            IAsyncSerializer<TPayload> serializer,
+            string bootstrapServers, 
+            string topic, 
+            int nMessages,
+            int nTests, 
+            int nHeaders,
+            bool useDeliveryHandler,
+            string username,
+            string password)
         {
             // mirrors the librdkafka performance test example.
             var config = new ProducerConfig
@@ -53,7 +120,7 @@ namespace Confluent.Kafka.Benchmark
                 SaslMechanism = SaslMechanism.Plain
             };
 
-            DeliveryResult<Null, byte[]> firstDeliveryReport = null;
+            DeliveryResult<Null, TPayload> firstDeliveryReport = null;
 
             Headers headers = null;
             if (nHeaders > 0)
@@ -65,17 +132,28 @@ namespace Confluent.Kafka.Benchmark
                 }
             }
 
-            using (var producer = new ProducerBuilder<Null, byte[]>(config).Build())
+            var builder = new ProducerBuilder<Null, TPayload>(config);
+
+            if (serializer != null)
+            {
+                if (useDeliveryHandler)
+                {
+                    builder.SetValueSerializer(serializer.AsSyncOverAsync());
+                }
+                else
+                {
+                    builder.SetValueSerializer(serializer);
+                }
+            }
+
+            using (var producer = builder.Build())
             {
                 for (var j=0; j<nTests; j += 1)
                 {
                     Console.WriteLine($"{producer.Name} producing on {topic} " + (useDeliveryHandler ? "[Action<Message>]" : "[Task]"));
 
-                    byte cnt = 0;
-                    var val = new byte[msgSize].Select(a => ++cnt).ToArray();
-
                     // this avoids including connection setup, topic creation time, etc.. in result.
-                    firstDeliveryReport = producer.ProduceAsync(topic, new Message<Null, byte[]> { Value = val, Headers = headers }).Result;
+                    firstDeliveryReport = producer.ProduceAsync(topic, new Message<Null, TPayload> { Value = val, Headers = headers }).Result;
 
                     var startTime = DateTime.Now.Ticks;
 
@@ -83,7 +161,7 @@ namespace Confluent.Kafka.Benchmark
                     {
                         var autoEvent = new AutoResetEvent(false);
                         var msgCount = nMessages;
-                        Action<DeliveryReport<Null, byte[]>> deliveryHandler = (DeliveryReport<Null, byte[]> deliveryReport) => 
+                        Action<DeliveryReport<Null, TPayload>> deliveryHandler = (DeliveryReport<Null, TPayload> deliveryReport) => 
                         {
                             if (deliveryReport.Error.IsError)
                             {
@@ -102,7 +180,7 @@ namespace Confluent.Kafka.Benchmark
                         {
                             try
                             {
-                                producer.Produce(topic, new Message<Null, byte[]> { Value = val, Headers = headers }, deliveryHandler);
+                                producer.Produce(topic, new Message<Null, TPayload> { Value = val, Headers = headers }, deliveryHandler);
                             }
                             catch (ProduceException<Null, byte[]> ex)
                             {
@@ -134,7 +212,7 @@ namespace Confluent.Kafka.Benchmark
                             var tasks = new Task[nMessages];
                             for (int i = 0; i < nMessages; i += 1)
                             {
-                                tasks[i] = producer.ProduceAsync(topic, new Message<Null, byte[]> { Value = val, Headers = headers });
+                                tasks[i] = producer.ProduceAsync(topic, new Message<Null, TPayload> { Value = val, Headers = headers });
                                 if (tasks[i].IsFaulted)
                                 {
                                     if (((ProduceException<Null, byte[]>)tasks[i].Exception.InnerException).Error.Code == ErrorCode.Local_QueueFull)
