@@ -1,0 +1,11 @@
+﻿{
+  "type": "record",
+  "name": "AvroPayload",
+  "namespace": "Confluent.Kafka.Benchmark",
+  "fields": [
+    {
+      "name": "Data",
+      "type": "string"
+    }
+  ]
+}

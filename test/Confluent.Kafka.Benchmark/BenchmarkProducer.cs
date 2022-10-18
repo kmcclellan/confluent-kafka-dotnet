@@ -59,6 +59,18 @@ namespace Confluent.Kafka.Benchmark
                         username,
                         password),
 
+                    SchemaType.Avro => BenchmarkProducerImpl(
+                        new AvroPayload { Data = val },
+                        new AvroSerializer<AvroPayload>(schemaClient),
+                        bootstrapServers,
+                        topic,
+                        nMessages,
+                        nTests,
+                        nHeaders,
+                        useDeliveryHandler,
+                        username,
+                        password),
+
                     _ => throw new NotSupportedException(),
                 };
             }
