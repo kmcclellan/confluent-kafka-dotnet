@@ -71,6 +71,18 @@ namespace Confluent.Kafka.Benchmark
                         username,
                         password),
 
+                    SchemaType.Protobuf => BenchmarkProducerImpl(
+                        new ProtobufPayload { Data = val },
+                        new ProtobufSerializer<ProtobufPayload>(schemaClient),
+                        bootstrapServers,
+                        topic,
+                        nMessages,
+                        nTests,
+                        nHeaders,
+                        useDeliveryHandler,
+                        username,
+                        password),
+
                     _ => throw new NotSupportedException(),
                 };
             }
