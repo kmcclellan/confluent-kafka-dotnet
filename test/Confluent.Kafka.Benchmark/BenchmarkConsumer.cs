@@ -1,4 +1,4 @@
-// Copyright 2016-2018 Confluent Inc.
+// Copyright 2016-2022 Confluent Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -23,28 +23,23 @@ namespace Confluent.Kafka.Benchmark
 {
     public static class BenchmarkConsumer
     {
-        public static void BenchmarkConsumerImpl(string bootstrapServers, string topic, string group, long firstMessageOffset, int nMessages, int nTests, int nHeaders, string username, string password)
+        public static void Consume(BenchmarkConfig config, long firstMessageOffset)
         {
-            var consumerConfig = new ConsumerConfig
-            {
-                GroupId = group,
-                BootstrapServers = bootstrapServers,
-                SessionTimeoutMs = 6000,
-                ConsumeResultFields = nHeaders == 0 ? "none" : "headers",
-                QueuedMinMessages = 1000000,
-                SaslUsername = username,
-                SaslPassword = password,
-                SecurityProtocol = username == null ? SecurityProtocol.Plaintext : SecurityProtocol.SaslSsl,
-                SaslMechanism = SaslMechanism.Plain
-            };
+            config.Consumer.SessionTimeoutMs = 6000;
+            config.Consumer.ConsumeResultFields = config.HeaderCount == 0 ? "none" : "headers";
+            config.Consumer.QueuedMinMessages = 1000000;
 
-            using (var consumer = new ConsumerBuilder<Ignore, Ignore>(consumerConfig).Build())
+            using (var consumer = new ConsumerBuilder<Ignore, Ignore>(config.Consumer).Build())
             {
-                for (var j=0; j<nTests; j += 1)
+                for (var j = 0; j < config.NumberOfTests; j += 1)
                 {
-                    Console.WriteLine($"{consumer.Name} consuming from {topic}");
+                    Console.WriteLine($"{consumer.Name} consuming from {config.TopicName}");
 
-                    consumer.Assign(new List<TopicPartitionOffset>() { new TopicPartitionOffset(topic, 0, firstMessageOffset) });
+                    consumer.Assign(
+                        new List<TopicPartitionOffset>()
+                        {
+                            new TopicPartitionOffset(config.TopicName, 0, firstMessageOffset),
+                        });
 
                     // consume 1 message before starting the timer to avoid including potential one-off delays.
                     var record = consumer.Consume(TimeSpan.FromSeconds(1));
@@ -53,7 +48,7 @@ namespace Confluent.Kafka.Benchmark
 
                     var cnt = 0;
 
-                    while (cnt < nMessages-1)
+                    while (cnt < config.NumberOfMessages - 1)
                     {
                         record = consumer.Consume(TimeSpan.FromSeconds(1));
                         if (record != null)
@@ -64,13 +59,10 @@ namespace Confluent.Kafka.Benchmark
 
                     var duration = DateTime.Now.Ticks - startTime;
 
-                    Console.WriteLine($"Consumed {nMessages-1} messages in {duration/10000.0:F0}ms");
-                    Console.WriteLine($"{(nMessages-1) / (duration/10000.0):F0}k msg/s");
+                    Console.WriteLine($"Consumed {config.NumberOfMessages - 1} messages in {duration/10000.0:F0}ms");
+                    Console.WriteLine($"{(config.NumberOfMessages - 1) / (duration/10000.0):F0}k msg/s");
                 }
             }
         }
-
-        public static void Consume(string bootstrapServers, string topic, string group, long firstMessageOffset, int nMessages, int nHeaders, int nTests, string username, string password)
-            => BenchmarkConsumerImpl(bootstrapServers, topic, group, firstMessageOffset, nMessages, nTests, nHeaders, username, password);
     }
 }

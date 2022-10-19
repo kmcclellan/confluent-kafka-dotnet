@@ -1,4 +1,4 @@
-// Copyright 2020 Confluent Inc.
+// Copyright 2020-2022 Confluent Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -26,7 +26,7 @@ namespace Confluent.Kafka.Benchmark
 {
     public class Latency
     {
-        public static void Run(string bootstrapServers, string topicName, string group, int headerCount, int messageSize, int messagesPerSecond, int numberOfMessages, string username, string password)
+        public static void Run(BenchmarkConfig config, int messagesPerSecond)
         {
             if (!Stopwatch.IsHighResolution)
             {
@@ -45,26 +45,17 @@ namespace Confluent.Kafka.Benchmark
 
             var consumerTask = Task.Run(() => {
                 // Use middle results only to better estimate steady state performance.
-                var trimStart = (long)(numberOfMessages * 0.05);
-                var trimEnd = (long)(numberOfMessages * 0.95);
+                var trimStart = (long)(config.NumberOfMessages * 0.05);
+                var trimEnd = (long)(config.NumberOfMessages * 0.95);
                 var results = new long[trimEnd - trimStart];
 
-                var config = new ConsumerConfig
-                {
-                    GroupId = group,
-                    BootstrapServers = bootstrapServers,
-                    SessionTimeoutMs = 6000,
-                    ConsumeResultFields = headerCount == 0 ? "none" : "headers",
-                    QueuedMinMessages = 1000000,
-                    AutoOffsetReset = AutoOffsetReset.Latest,
-                    EnableAutoCommit = true,
-                    SaslUsername = username,
-                    SaslPassword = password,
-                    SecurityProtocol = username == null ? SecurityProtocol.Plaintext : SecurityProtocol.SaslSsl,
-                    SaslMechanism = SaslMechanism.Plain
-                };
+                config.Consumer.SessionTimeoutMs = 6000;
+                config.Consumer.ConsumeResultFields = config.HeaderCount == 0 ? "none" : "headers";
+                config.Consumer.QueuedMinMessages = 1000000;
+                config.Consumer.AutoOffsetReset = AutoOffsetReset.Latest;
+                config.Consumer.EnableAutoCommit = true;
 
-                using (var consumer = new ConsumerBuilder<Null, byte[]>(config)
+                using (var consumer = new ConsumerBuilder<Null, byte[]>(config.Consumer)
                     .SetPartitionsAssignedHandler((c, partitions) => {
                         // Ensure there is no race between consumer determining start offsets and production starting.
                         var initialAssignment = partitions.Select(p => new TopicPartitionOffset(p, c.QueryWatermarkOffsets(p, TimeSpan.FromSeconds(5)).High)).ToList();
@@ -77,10 +68,10 @@ namespace Confluent.Kafka.Benchmark
                     })
                     .Build())
                 {
-                    consumer.Subscribe(topicName);
+                    consumer.Subscribe(config.TopicName);
 
                     var count = 0;
-                    while (count < numberOfMessages)
+                    while (count < config.NumberOfMessages)
                     {
                         var cr = consumer.Consume(1000);
                         if (cr == null)
@@ -101,9 +92,9 @@ namespace Confluent.Kafka.Benchmark
                         long latencyMilliSeconds = elapsedMilliSeconds - writeMilliseconds;
 
                         results[count++ - trimStart] = latencyMilliSeconds;
-                        if (count % (numberOfMessages / 10) == 0)
+                        if (count % (config.NumberOfMessages / 10) == 0)
                         {
-                            Console.WriteLine($"...{(count / (numberOfMessages/10))}0% complete");
+                            Console.WriteLine($"...{(count / (config.NumberOfMessages/10))}0% complete");
                         }
                     }
 
@@ -127,38 +118,30 @@ namespace Confluent.Kafka.Benchmark
 
                 lock (monitorObj) { Monitor.Wait(monitorObj); }
 
-                var config = new ProducerConfig
-                {
-                    BootstrapServers = bootstrapServers,
-                    QueueBufferingMaxMessages = 2000000,
-                    MessageSendMaxRetries = 3,
-                    RetryBackoffMs = 500 ,
-                    LingerMs = 5,
-                    DeliveryReportFields = "none",
-                    EnableIdempotence = true,
-                    SaslUsername = username,
-                    SaslPassword = password,
-                    SecurityProtocol = username == null ? SecurityProtocol.Plaintext : SecurityProtocol.SaslSsl,
-                    SaslMechanism = SaslMechanism.Plain
-                };
+                config.Producer.QueueBufferingMaxMessages = 2000000;
+                config.Producer.MessageSendMaxRetries = 3;
+                config.Producer.RetryBackoffMs = 500;
+                config.Producer.LingerMs = 5;
+                config.Producer.DeliveryReportFields = "none";
+                config.Producer.EnableIdempotence = true;
 
                 Headers headers = null;
-                if (headerCount > 0)
+                if (config.HeaderCount > 0)
                 {
                     headers = new Headers();
-                    for (int i=0; i<headerCount; ++i)
+                    for (int i = 0; i < config.HeaderCount; ++i)
                     {
                         headers.Add($"header-{i+1}", new byte[] { (byte)i, (byte)(i+1), (byte)(i+2), (byte)(i+3) });
                     }
                 }
                 
-                using (var producer = new ProducerBuilder<Null, byte[]>(config).Build())
+                using (var producer = new ProducerBuilder<Null, byte[]>(config.Producer).Build())
                 {
                     var startMilliseconds = sw.ElapsedMilliseconds;
 
-                    for (int i=0; i<numberOfMessages; ++i)
+                    for (int i = 0; i < config.NumberOfMessages; ++i)
                     {
-                        var payload = new byte[messageSize];
+                        var payload = new byte[config.MessageSize];
 
                         long elapsedMilliseconds;
                         lock (sw) { elapsedMilliseconds = sw.ElapsedMilliseconds; }
@@ -167,8 +150,15 @@ namespace Confluent.Kafka.Benchmark
                         {
                             bw.Write(elapsedMilliseconds);
                         }
-                        producer.Produce(topicName, new Message<Null, byte[]> { Value = payload, Headers = headers },
-                            dr => { if (dr.Error.Code != ErrorCode.NoError) Console.WriteLine("Message delivery failed: " + dr.Error.Reason); });
+
+                        producer.Produce(
+                            config.TopicName,
+                            new Message<Null, byte[]> { Value = payload, Headers = headers },
+                            dr =>
+                            {
+                                if (dr.Error.Code != ErrorCode.NoError)
+                                    Console.WriteLine("Message delivery failed: " + dr.Error.Reason);
+                            });
 
                         var desiredProduceCount = (elapsedMilliseconds - startMilliseconds)/1000.0 * messagesPerSecond;
 
@@ -183,7 +173,12 @@ namespace Confluent.Kafka.Benchmark
 
                     long elapsedMilliSeconds;
                     lock (sw) {elapsedMilliSeconds = sw.ElapsedMilliseconds; }
-                    Console.WriteLine("Actual throughput: " + (int)Math.Round((numberOfMessages / ((double)(elapsedMilliSeconds - startMilliseconds) / 1000.0))) + " msg/s");
+
+                    Console.WriteLine(
+                        "Actual throughput: "
+                            + (int)Math.Round(
+                                config.NumberOfMessages / ((elapsedMilliSeconds - startMilliseconds) / 1000.0))
+                            + " msg/s");
                 }
             });
 

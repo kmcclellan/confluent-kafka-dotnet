@@ -1,4 +1,4 @@
-// Copyright 2016-2017 Confluent Inc.
+// Copyright 2016-2022 Confluent Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -27,29 +27,20 @@ namespace Confluent.Kafka.Benchmark
     public class Program
     {
 
-        private static void CreateTopic(string bootstrapServers, string username, string password, string topicName, int partitionCount, short replicationFactor)
+        private static void CreateTopic(TopicSpecification topic, BenchmarkConfig config)
         {
-            var config = new AdminClientConfig
-            {
-                BootstrapServers = bootstrapServers,
-                SaslUsername = username,
-                SaslPassword = password,
-                SecurityProtocol = username == null ? SecurityProtocol.Plaintext : SecurityProtocol.SaslSsl,
-                SaslMechanism = SaslMechanism.Plain
-            };
-
-            using (var adminClient = new AdminClientBuilder(config).Build())
+            using (var adminClient = new AdminClientBuilder(config.AdminClient).Build())
             {
                 try
                 {
-                    adminClient.DeleteTopicsAsync(new List<string> { topicName }).Wait();
+                    adminClient.DeleteTopicsAsync(new List<string> { topic.Name }).Wait();
                 }
                 catch (AggregateException ae)
                 {
                     if (!(ae.InnerException is DeleteTopicsException) ||
                         (((DeleteTopicsException)ae.InnerException).Results.Select(r => r.Error.Code).Where(el => el != ErrorCode.UnknownTopicOrPart).Count() > 0))
                     {
-                        throw new Exception($"Unable to delete topic {topicName}", ae);
+                        throw new Exception($"Unable to delete topic {topic.Name}", ae);
                     }
                 }
 
@@ -58,7 +49,7 @@ namespace Confluent.Kafka.Benchmark
 
                 try
                 {
-                    adminClient.CreateTopicsAsync(new List<TopicSpecification> { new TopicSpecification { Name = topicName, NumPartitions = partitionCount, ReplicationFactor = replicationFactor } }).Wait();
+                    adminClient.CreateTopicsAsync(new List<TopicSpecification> { topic }).Wait();
                 }
                 catch (AggregateException e)
                 {
@@ -67,37 +58,37 @@ namespace Confluent.Kafka.Benchmark
             }
         }
 
-
         public static void Main(string[] args)
         {
             bool showHelp = false;
             string mode = null;
-            string bootstrapServers = "localhost:9092";
-            string topicName = "dotnet-benchmark";
-            string group = "benchmark-consumer-group";
-            int headerCount = 0;
             int? messagesPerSecond = null;
-            int numberOfMessages = 5000000;
-            int messageSize = 100;
-            int? partitionCount = null;
-            short replicationFactor = 3;
-            string username = null;
-            string password = null;
+
+            TopicSpecification topic = new()
+            {
+                Name = "dotnet-benchmark",
+                ReplicationFactor = 3
+            };
+
+            BenchmarkConfig config = new(topic)
+            {
+                BootstrapServers = "localhost:9092",
+            };
 
             OptionSet p = new OptionSet
             {
                 { "m|mode=", "throughput|latency", m => mode = m },
-                { "b|brokers=", $"bootstrap.servers (default: {bootstrapServers})", v => bootstrapServers = v },
-                { "t=", $"topic (default: {topicName})", t => topicName = t },
-                { "g=", $"consumer group (default: {group})", g => group = g },
-                { "h=", $"number of headers (default: {headerCount})", h => headerCount = int.Parse(h) },
-                { "n=", $"number of messages (default: {numberOfMessages})", n => numberOfMessages = int.Parse(n) },
+                { "b|brokers=", $"bootstrap.servers (default: {config.BootstrapServers})", v => config.BootstrapServers = v },
+                { "t=", $"topic (default: {topic.Name})", t => topic.Name = t },
+                { "g=", $"consumer group (default: {config.Consumer.GroupId})", g => config.Consumer.GroupId = g },
+                { "h=", $"number of headers (default: {config.HeaderCount})", (int h) => config.HeaderCount = h },
+                { "n=", $"number of messages (default: {config.NumberOfMessages})", (int n) => config.NumberOfMessages = n },
                 { "r=", "rate - messages per second (latency mode only). must be > 1000", (int r) => messagesPerSecond = r },
-                { "s=", $"message size (default: {messageSize})", s => messageSize = int.Parse(s) },
-                { "p=", "(re)create topic with this partition count (default: not set)", v => partitionCount = int.Parse(v) },
-                { "f=", $"replication factor when creating topic (default {replicationFactor})", f => replicationFactor = short.Parse(f) },
-                { "u=", "SASL username (will also set protocol=SASL_SSL, mechanism=PLAIN)", u => username = u },
-                { "w=", "SASL password", w => password = w },
+                { "s=", $"message size (default: {config.MessageSize})" , (int s) => config.MessageSize = s },
+                { "p=", "(re)create topic with this partition count (default: not set)", (int v) => topic.NumPartitions = v },
+                { "f=", $"replication factor when creating topic (default {topic.ReplicationFactor})" , (short f) => topic.ReplicationFactor = f },
+                { "u=", "SASL username (will also set protocol=SASL_SSL, mechanism=PLAIN)", config.SetUserName },
+                { "w=", "SASL password", config.SetPassword },
                 { "help", "show this message and exit", v => showHelp = v != null },
             };
 
@@ -112,21 +103,20 @@ namespace Confluent.Kafka.Benchmark
                 return;
             }
 
-            if (partitionCount != null)
+            if (topic.NumPartitions > 0)
             {
-                CreateTopic(bootstrapServers, username, password, topicName, partitionCount.Value, replicationFactor);
+                CreateTopic(topic, config);
             }
 
             if (mode == "throughput")
             {
-                const int NUMBER_OF_TESTS = 1;
-                BenchmarkProducer.TaskProduce(bootstrapServers, topicName, numberOfMessages, messageSize, headerCount, NUMBER_OF_TESTS, username, password);
-                var firstMessageOffset = BenchmarkProducer.DeliveryHandlerProduce(bootstrapServers, topicName, numberOfMessages, messageSize, headerCount, NUMBER_OF_TESTS, username, password);
-                BenchmarkConsumer.Consume(bootstrapServers, topicName, group, firstMessageOffset, numberOfMessages, headerCount, NUMBER_OF_TESTS, username, password);
+                BenchmarkProducer.TaskProduce(config);
+                var firstMessageOffset = BenchmarkProducer.DeliveryHandlerProduce(config);
+                BenchmarkConsumer.Consume(config, firstMessageOffset);
             }
             else if (mode == "latency")
             {
-                Latency.Run(bootstrapServers, topicName, group, headerCount, messageSize, messagesPerSecond.Value, numberOfMessages, username, password);
+                Latency.Run(config, messagesPerSecond.Value);
             }
         }
     }
