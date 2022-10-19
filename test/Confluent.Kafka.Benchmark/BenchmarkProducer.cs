@@ -18,6 +18,10 @@ using System;
 using System.Threading.Tasks;
 using System.Threading;
 using System.Linq;
+using Confluent.Kafka.Benchmark.Payloads;
+using Confluent.Kafka.SyncOverAsync;
+using Confluent.SchemaRegistry;
+using Confluent.SchemaRegistry.Serdes;
 
 
 namespace Confluent.Kafka.Benchmark
@@ -26,6 +30,31 @@ namespace Confluent.Kafka.Benchmark
     {
         private static long BenchmarkProducerImpl(BenchmarkConfig config, bool useDeliveryHandler)
         {
+            if (config.SchemaType == null)
+            {
+                return BenchmarkProducerImpl(config, useDeliveryHandler, x => x);
+            }
+
+            var schemaClient = new CachedSchemaRegistryClient(config.SchemaRegistry);
+
+            return config.SchemaType switch
+            {
+                SchemaType.Json => BenchmarkProducerImpl(
+                    config,
+                    useDeliveryHandler,
+                    x => new JsonPayload { Data = x },
+                    new JsonSerializer<JsonPayload>(schemaClient)),
+
+                _ => throw new NotSupportedException()
+            };
+        }
+
+        private static long BenchmarkProducerImpl<TPayload>(
+            BenchmarkConfig config,
+            bool useDeliveryHandler,
+            Func<string, TPayload> payloadFactory,
+            IAsyncSerializer<TPayload> serializer = null)
+        {
             // mirrors the librdkafka performance test example.
             config.Producer.QueueBufferingMaxMessages = 2000000;
             config.Producer.MessageSendMaxRetries = 3;
@@ -33,7 +62,7 @@ namespace Confluent.Kafka.Benchmark
             config.Producer.LingerMs = 100;
             config.Producer.DeliveryReportFields = "none";
 
-            DeliveryResult<Null, byte[]> firstDeliveryReport = null;
+            DeliveryResult<Null, TPayload> firstDeliveryReport = null;
 
             Headers headers = null;
             if (config.HeaderCount > 0)
@@ -45,7 +74,21 @@ namespace Confluent.Kafka.Benchmark
                 }
             }
 
-            using (var producer = new ProducerBuilder<Null, byte[]>(config.Producer).Build())
+            var producerBuilder = new ProducerBuilder<Null, TPayload>(config.Producer);
+
+            if (serializer != null)
+            {
+                if (useDeliveryHandler)
+                {
+                    producerBuilder.SetValueSerializer(serializer.AsSyncOverAsync());
+                }
+                else
+                {
+                    producerBuilder.SetValueSerializer(serializer);
+                }
+            }
+
+            using (var producer = producerBuilder.Build())
             {
                 for (var j = 0; j < config.NumberOfTests; j += 1)
                 {
@@ -53,13 +96,12 @@ namespace Confluent.Kafka.Benchmark
                         $"{producer.Name} producing on {config.TopicName} "
                             + (useDeliveryHandler ? "[Action<Message>]" : "[Task]"));
 
-                    byte cnt = 0;
-                    var val = new byte[config.MessageSize].Select(a => ++cnt).ToArray();
+                    var val = payloadFactory(string.Concat(Enumerable.Repeat("abcdefgjij", config.MessageSize / 10)));
 
                     // this avoids including connection setup, topic creation time, etc.. in result.
                     firstDeliveryReport = producer.ProduceAsync(
                         config.TopicName,
-                        new Message<Null, byte[]> { Value = val, Headers = headers })
+                        new Message<Null, TPayload> { Value = val, Headers = headers })
                         .Result;
 
                     var startTime = DateTime.Now.Ticks;
@@ -68,7 +110,7 @@ namespace Confluent.Kafka.Benchmark
                     {
                         var autoEvent = new AutoResetEvent(false);
                         var msgCount = config.NumberOfMessages;
-                        Action<DeliveryReport<Null, byte[]>> deliveryHandler = (DeliveryReport<Null, byte[]> deliveryReport) => 
+                        Action<DeliveryReport<Null, TPayload>> deliveryHandler = (DeliveryReport<Null, TPayload> deliveryReport) => 
                         {
                             if (deliveryReport.Error.IsError)
                             {
@@ -89,10 +131,10 @@ namespace Confluent.Kafka.Benchmark
                             {
                                 producer.Produce(
                                     config.TopicName,
-                                    new Message<Null, byte[]> { Value = val, Headers = headers },
+                                    new Message<Null, TPayload> { Value = val, Headers = headers },
                                     deliveryHandler);
                             }
-                            catch (ProduceException<Null, byte[]> ex)
+                            catch (ProduceException<Null, TPayload> ex)
                             {
                                 if (ex.Error.Code == ErrorCode.Local_QueueFull)
                                 {
@@ -124,11 +166,11 @@ namespace Confluent.Kafka.Benchmark
                             {
                                 tasks[i] = producer.ProduceAsync(
                                     config.TopicName,
-                                    new Message<Null, byte[]> { Value = val, Headers = headers });
+                                    new Message<Null, TPayload> { Value = val, Headers = headers });
 
                                 if (tasks[i].IsFaulted)
                                 {
-                                    if (((ProduceException<Null, byte[]>)tasks[i].Exception.InnerException).Error.Code == ErrorCode.Local_QueueFull)
+                                    if (((ProduceException<Null, TPayload>)tasks[i].Exception.InnerException).Error.Code == ErrorCode.Local_QueueFull)
                                     {
                                         producer.Poll(TimeSpan.FromSeconds(1));
                                         i -= 1;

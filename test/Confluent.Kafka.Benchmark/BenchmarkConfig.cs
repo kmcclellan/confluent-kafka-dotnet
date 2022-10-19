@@ -16,6 +16,7 @@
 
 using System;
 using Confluent.Kafka.Admin;
+using Confluent.SchemaRegistry;
 
 namespace Confluent.Kafka.Benchmark
 {
@@ -47,6 +48,8 @@ namespace Confluent.Kafka.Benchmark
 
         public AdminClientConfig AdminClient { get; } = new();
 
+        public SchemaRegistryConfig SchemaRegistry { get; } = new() { Url = "localhost:8081" };
+
         public int NumberOfMessages { get; set; } = 5000000;
 
         public int MessageSize { get; set; } = 100;
@@ -54,6 +57,8 @@ namespace Confluent.Kafka.Benchmark
         public int HeaderCount { get; set; }
 
         public int NumberOfTests { get; set; } = 1;
+
+        public SchemaType? SchemaType { get; set; }
 
         public void SetUserName(string value)
         {

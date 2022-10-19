@@ -20,6 +20,7 @@ using System.Linq;
 using System.Threading;
 using Mono.Options;
 using Confluent.Kafka.Admin;
+using Confluent.SchemaRegistry;
 
 
 namespace Confluent.Kafka.Benchmark
@@ -89,6 +90,8 @@ namespace Confluent.Kafka.Benchmark
                 { "f=", $"replication factor when creating topic (default {topic.ReplicationFactor})" , (short f) => topic.ReplicationFactor = f },
                 { "u=", "SASL username (will also set protocol=SASL_SSL, mechanism=PLAIN)", config.SetUserName },
                 { "w=", "SASL password", config.SetPassword },
+                { "schema=", "The schema type used for serialization, if any.", (SchemaType s) => config.SchemaType = s },
+                { "registry=", $"The schema registry URL to use (default: {config.SchemaRegistry.Url}).", s => config.SchemaRegistry.Url = s },
                 { "help", "show this message and exit", v => showHelp = v != null },
             };
 
