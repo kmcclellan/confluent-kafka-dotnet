@@ -344,6 +344,14 @@ namespace Confluent.Kafka
             Message<TKey, TValue> message,
             IDeliveryHandler deliveryHandler)
         {
+            if (message.Timestamp.Type != TimestampType.CreateTime)
+            {
+                if (message.Timestamp != Timestamp.Default)
+                {
+                    throw new ArgumentException("Timestamp must be either Timestamp.Default, or Timestamp.CreateTime.");
+                }
+            }
+
             Headers headers = message.Headers ?? new Headers();
 
             byte[] keyBytes;
@@ -384,19 +392,49 @@ namespace Confluent.Kafka
                     ex);
             }
 
-            try
+            ErrorCode err;
+            if (this.enableDeliveryReports && deliveryHandler != null)
             {
-                ProduceImpl(
+                // Passes the TaskCompletionSource to the delivery report callback via the msg_opaque pointer
+
+                // Note: There is a level of indirection between the GCHandle and
+                // physical memory address. GCHandle.ToIntPtr doesn't get the
+                // physical address, it gets an id that refers to the object via
+                // a handle-table.
+                var gch = GCHandle.Alloc(deliveryHandler);
+                var ptr = GCHandle.ToIntPtr(gch);
+
+                err = KafkaHandle.Produce(
                     topicPartition.Topic,
                     valBytes, 0, valBytes == null ? 0 : valBytes.Length,
                     keyBytes, 0, keyBytes == null ? 0 : keyBytes.Length,
-                    message.Timestamp, topicPartition.Partition, headers,
-                    deliveryHandler);
+                    topicPartition.Partition.Value,
+                    message.Timestamp.UnixTimestampMs,
+                    headers,
+                    ptr);
+
+                if (err != ErrorCode.NoError)
+                {
+                    // note: freed in the delivery handler callback otherwise.
+                    gch.Free();
+                }
             }
-            catch (KafkaException ex)
+            else
+            {
+                err = KafkaHandle.Produce(
+                    topicPartition.Topic,
+                    valBytes, 0, valBytes == null ? 0 : valBytes.Length,
+                    keyBytes, 0, keyBytes == null ? 0 : keyBytes.Length,
+                    topicPartition.Partition.Value,
+                    message.Timestamp.UnixTimestampMs,
+                    headers,
+                    IntPtr.Zero);
+            }
+
+            if (err != ErrorCode.NoError)
             {
                 throw new ProduceException<TKey, TValue>(
-                    ex.Error,
+                    KafkaHandle.CreatePossiblyFatalError(err, null),
                     new DeliveryResult<TKey, TValue>
                     {
                         Message = message,
