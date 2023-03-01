@@ -384,12 +384,25 @@ namespace Confluent.Kafka
                     ex);
             }
 
-            ProduceImpl(
-                topicPartition.Topic,
-                valBytes, 0, valBytes == null ? 0 : valBytes.Length,
-                keyBytes, 0, keyBytes == null ? 0 : keyBytes.Length,
-                message.Timestamp, topicPartition.Partition, headers,
-                deliveryHandler);
+            try
+            {
+                ProduceImpl(
+                    topicPartition.Topic,
+                    valBytes, 0, valBytes == null ? 0 : valBytes.Length,
+                    keyBytes, 0, keyBytes == null ? 0 : keyBytes.Length,
+                    message.Timestamp, topicPartition.Partition, headers,
+                    deliveryHandler);
+            }
+            catch (KafkaException ex)
+            {
+                throw new ProduceException<TKey, TValue>(
+                    ex.Error,
+                    new DeliveryResult<TKey, TValue>
+                    {
+                        Message = message,
+                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
+                    });
+            }
         }
 
 
@@ -801,47 +814,34 @@ namespace Confluent.Kafka
             Message<TKey, TValue> message,
             CancellationToken cancellationToken)
         {
-            try
+            if (enableDeliveryReports)
             {
-                if (enableDeliveryReports)
+                var handler = new TypedTaskDeliveryHandlerShim(
+                    topicPartition.Topic,
+                    enableDeliveryReportKey ? message.Key : default(TKey),
+                    enableDeliveryReportValue ? message.Value : default(TValue));
+
+                if (cancellationToken.CanBeCanceled)
                 {
-                    var handler = new TypedTaskDeliveryHandlerShim(
-                        topicPartition.Topic,
-                        enableDeliveryReportKey ? message.Key : default(TKey),
-                        enableDeliveryReportValue ? message.Value : default(TValue));
-
-                    if (cancellationToken.CanBeCanceled)
-                    {
-                        handler.CancellationTokenRegistration
-                            = cancellationToken.Register(() => handler.TrySetCanceled());
-                    }
-
-                    await ProduceImplAsync(topicPartition, message, handler).ConfigureAwait(false);
-
-                    return await handler.Task.ConfigureAwait(false);
+                    handler.CancellationTokenRegistration
+                        = cancellationToken.Register(() => handler.TrySetCanceled());
                 }
-                else
-                {
-                    await ProduceImplAsync(topicPartition, message, null).ConfigureAwait(false);
 
-                    var result = new DeliveryResult<TKey, TValue>
-                    {
-                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset),
-                        Message = message
-                    };
+                await ProduceImplAsync(topicPartition, message, handler).ConfigureAwait(false);
 
-                    return result;
-                }
+                return await handler.Task.ConfigureAwait(false);
             }
-            catch (KafkaException ex)
+            else
             {
-                throw new ProduceException<TKey, TValue>(
-                    ex.Error,
-                    new DeliveryResult<TKey, TValue>
-                    {
-                        Message = message,
-                        TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset)
-                    });
+                await ProduceImplAsync(topicPartition, message, null).ConfigureAwait(false);
+
+                var result = new DeliveryResult<TKey, TValue>
+                {
+                    TopicPartitionOffset = new TopicPartitionOffset(topicPartition, Offset.Unset),
+                    Message = message
+                };
+
+                return result;
             }
         }
 
