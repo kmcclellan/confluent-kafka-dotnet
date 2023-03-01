@@ -302,7 +302,7 @@ namespace Confluent.Kafka
             catch (Exception ex)
             {
                 throw new ProduceException<TKey, TValue>(
-                    new Error(ErrorCode.Local_KeySerialization),
+                    new Error(ErrorCode.Local_KeySerialization, ex.ToString()),
                     new DeliveryResult<TKey, TValue>
                     {
                         Message = message,
@@ -321,7 +321,7 @@ namespace Confluent.Kafka
             catch (Exception ex)
             {
                 throw new ProduceException<TKey, TValue>(
-                    new Error(ErrorCode.Local_ValueSerialization),
+                    new Error(ErrorCode.Local_ValueSerialization, ex.ToString()),
                     new DeliveryResult<TKey, TValue>
                     {
                         Message = message,
