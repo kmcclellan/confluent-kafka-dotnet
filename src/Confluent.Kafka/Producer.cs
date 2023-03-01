@@ -816,13 +816,13 @@ namespace Confluent.Kafka
                             = cancellationToken.Register(() => handler.TrySetCanceled());
                     }
 
-                    await ProduceImplAsync(topicPartition, message, handler);
+                    await ProduceImplAsync(topicPartition, message, handler).ConfigureAwait(false);
 
                     return await handler.Task.ConfigureAwait(false);
                 }
                 else
                 {
-                    await ProduceImplAsync(topicPartition, message, null);
+                    await ProduceImplAsync(topicPartition, message, null).ConfigureAwait(false);
 
                     var result = new DeliveryResult<TKey, TValue>
                     {
